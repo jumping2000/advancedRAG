@@ -1,0 +1,4 @@
+# TLS certificate and key of this installation (cert.pem, key.pem): never committed
+*
+!.gitignore
+!.gitkeep
