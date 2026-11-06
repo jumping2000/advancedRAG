@@ -130,7 +130,9 @@ def assert_no_secret(response: httpx.Response, *passwords: str) -> None:
     for password in passwords:
         assert password not in response.text
     assert "$argon2" not in response.text
-    assert "password" not in response.text
+    # No password field in any body; the error code password_too_short (plan's interface) may name the password.
+    assert '"password"' not in response.text
+    assert "password_hash" not in response.text
 
 
 # AC-014 ---------------------------------------------------------------------------------------------------------------
