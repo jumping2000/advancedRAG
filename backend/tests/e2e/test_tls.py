@@ -52,6 +52,7 @@ class Echo(BaseHTTPRequestHandler):
 HTTPServer(("0.0.0.0", 8000), Echo).serve_forever()
 """
 FRONTEND_MARKER = '<div id="root"></div>'
+NO_HTTPS_PORT_LOG = "TLS disabled: HTTPS_PORT not set (start with compose.tls.yaml)"
 
 pytestmark = pytest.mark.e2e
 
@@ -137,7 +138,7 @@ def wait_for(probe: Callable[[], bool], what: str, timeout: float = 60.0) -> Non
 
 
 class Stack:
-    """The compose stack of compose.yaml, with nginx/certs/ replaced by a temporary folder."""
+    """The compose stack (compose.yaml + compose.tls.yaml), with nginx/certs/ replaced by a temporary folder."""
 
     def __init__(self, workdir: Path) -> None:
         self.workdir = workdir
@@ -146,6 +147,7 @@ class Stack:
         self.empty_certs = workdir / "certs-empty"
         self.empty_certs.mkdir()
         self.cert = generate_certificate(workdir / "certs")
+        self.files: tuple[str, ...] = COMPOSE_FILES
         self.use_certs(False)
 
     def compose(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -156,7 +158,7 @@ class Stack:
             PROJECT,
             "--env-file",
             str(self.env_file),
-            *compose_file_args(*COMPOSE_FILES),
+            *compose_file_args(*self.files),
             "-f",
             str(self.override),
             *args,
@@ -169,8 +171,9 @@ class Stack:
         # JSON is valid YAML: no quoting problems with Windows paths
         self.override.write_text(json.dumps({"services": {"nginx": {"volumes": [volume]}}}), encoding="utf-8")
 
-    def up(self, *, with_certs: bool) -> None:
+    def up(self, *, with_certs: bool, tls_override: bool = True) -> None:
         self.use_certs(with_certs)
+        self.files = COMPOSE_FILES if tls_override else ("compose.yaml",)
         result = self.compose("up", "-d", "--build", "--wait", "--wait-timeout", "180", check=False)
         if result.returncode != 0:
             logs = self.compose("logs", "nginx", check=False).stdout
@@ -309,6 +312,20 @@ def test_AC_003_with_certificates_https_serves_frontend_and_api(stack: Stack) ->
     assert health.json()["checks"]["database"] == "ok"
 
 
+def test_AC_003_certificates_with_compose_yaml_alone_stay_http_only_and_say_why(stack: Stack) -> None:
+    stack.up(with_certs=True, tls_override=False)
+
+    page = httpx.get(f"http://127.0.0.1:{HTTP_PORT}/kbs", timeout=10, follow_redirects=False)
+    assert page.status_code == 200
+    assert FRONTEND_MARKER in page.text
+
+    health = httpx.get(f"http://127.0.0.1:{HTTP_PORT}/api/health", timeout=10, follow_redirects=False)
+    assert health.status_code == 200
+
+    logs = stack.compose("logs", "nginx")
+    assert NO_HTTPS_PORT_LOG in logs.stdout + logs.stderr
+
+
 # --- Review focus: X-Forwarded-Proto set by Nginx from the real scheme, never taken from the client ---
 
 
@@ -325,7 +342,7 @@ def remove_echo_setup() -> None:
 
 
 @contextmanager
-def nginx_in_front_of_echo_backend(image: str, certs: Path, https_port: int) -> Iterator[None]:
+def nginx_in_front_of_echo_backend(image: str, certs: Path, https_port: int | None) -> Iterator[None]:
     """The Nginx image alone, with a fake `backend` that answers with the headers it received."""
     remove_echo_setup()
     try:
@@ -357,8 +374,7 @@ def nginx_in_front_of_echo_backend(image: str, certs: Path, https_port: int) -> 
             f"127.0.0.1:{ECHO_HTTP_PORT}:80",
             "-p",
             f"127.0.0.1:{ECHO_HTTPS_PORT}:443",
-            "-e",
-            f"HTTPS_PORT={https_port}",
+            *(["-e", f"HTTPS_PORT={https_port}"] if https_port is not None else []),
             "-v",
             f"{certs}:/etc/nginx/certs:ro",
             image,
@@ -421,3 +437,18 @@ def test_AC_004_only_one_of_cert_and_key_stays_http_only_and_names_the_missing_f
 
         logs = run("docker", "logs", ECHO_NGINX)
         assert f"TLS disabled: {missing} missing in /etc/nginx/certs" in logs.stdout + logs.stderr
+
+
+def test_AC_003_certificates_without_https_port_do_not_answer_https(nginx_image: str, stack: Stack) -> None:
+    with nginx_in_front_of_echo_backend(nginx_image, stack.cert.parent, None):
+        url = f"http://127.0.0.1:{ECHO_HTTP_PORT}/api/echo"
+        wait_for(lambda: httpx.get(url, timeout=5).status_code == 200, "nginx in front of the echo backend")
+
+        page = httpx.get(f"http://127.0.0.1:{ECHO_HTTP_PORT}/kbs", timeout=5, follow_redirects=False)
+        assert page.status_code == 200
+        assert FRONTEND_MARKER in page.text
+        with pytest.raises(httpx.TransportError):
+            httpx.get(f"https://127.0.0.1:{ECHO_HTTPS_PORT}/", timeout=5, verify=trust(stack.cert))
+
+        logs = run("docker", "logs", ECHO_NGINX)
+        assert NO_HTTPS_PORT_LOG in logs.stdout + logs.stderr
