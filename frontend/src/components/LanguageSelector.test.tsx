@@ -1,5 +1,6 @@
 // SPEC-2026-11-06-fase-1-fondazioni
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { onTestFinished } from "vitest";
 
 import { App } from "../app/App";
 
@@ -64,6 +65,25 @@ function browserLanguages(languages: string[]) {
   vi.spyOn(window.navigator, "language", "get").mockReturnValue(languages[0]);
 }
 
+/** Replace window.location for this test with one whose reload() is a spy; every other member is the real one. */
+function watchReload() {
+  const descriptor = Object.getOwnPropertyDescriptor(window, "location");
+  const original = window.location;
+  const reload = vi.fn();
+  const watched = new Proxy(original, {
+    get(target, key) {
+      if (key === "reload") return reload;
+      const value: unknown = Reflect.get(target, key);
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+  Object.defineProperty(window, "location", { configurable: true, value: watched });
+  onTestFinished(() => {
+    if (descriptor) Object.defineProperty(window, "location", descriptor);
+  });
+  return reload;
+}
+
 function signIn(labels: { username: string; submit: string }) {
   fireEvent.change(screen.getByLabelText(labels.username), { target: { value: "mario" } });
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-horse-battery" } });
@@ -101,7 +121,10 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: English chosen, sign out, sign in 
   expect(state.language).toBe("en");
 
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
-  await screen.findByRole("button", { name: /^(Sign in|Accedi)$/ });
+  // Owner's decision: right after sign-out, in the same tab, the login page keeps the last language used.
+  expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Username")).toBeInTheDocument();
+  expect(screen.getByLabelText("Language")).toHaveValue("en");
   cleanup();
 
   // A new page load from the Italian browser: the login page follows the browser, the profile wins after sign-in.
@@ -119,6 +142,7 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: English chosen, sign out, sign in 
 it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: the selector on the login page changes the language without reloading and saves nothing", async () => {
   browserLanguages(["it-IT"]);
   const { calls } = fakeBackend();
+  const reload = watchReload();
   render(<App />);
 
   const username = await screen.findByLabelText("Nome utente");
@@ -133,6 +157,7 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: the selector on the login page cha
   expect(screen.getByLabelText("Username")).toHaveValue("mario");
   expect(screen.getByLabelText("Language")).toHaveValue("en");
   expect(calls.map((call) => call.key)).toEqual(["GET /api/auth/me"]);
+  expect(reload).not.toHaveBeenCalled();
 });
 
 it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: the selector offers exactly Italian and English", async () => {
@@ -153,6 +178,7 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: after sign-in, choosing Italian sa
   const { state, calls } = fakeBackend();
   state.signedIn = true;
   state.language = "en";
+  const reload = watchReload();
   render(<App />);
 
   const signOut = await screen.findByRole("button", { name: "Sign out" });
@@ -165,6 +191,7 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: after sign-in, choosing Italian sa
   const patch = calls.find((call) => call.key === "PATCH /api/auth/me");
   expect(new Headers(patch?.init?.headers).get("Content-Type")).toBe("application/json");
   expect(state.language).toBe("it");
+  expect(reload).not.toHaveBeenCalled();
 });
 
 it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: a language saved in the profile replaces the browser language when the session is open", async () => {
@@ -178,9 +205,9 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: a language saved in the profile re
   expect(screen.getByLabelText("Language")).toHaveValue("en");
 });
 
-it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: if saving the language fails, the UI says so in the chosen language", async () => {
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: if saving the language fails, the UI goes back to the previous language and says so", async () => {
   browserLanguages(["it-IT"]);
-  mockApi({
+  const calls = mockApi({
     "GET /api/auth/me": () => json(200, user(null)),
     "PATCH /api/auth/me": () => new Response("<html>Bad gateway</html>", { status: 502 }),
   });
@@ -189,7 +216,29 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: if saving the language fails, the 
   await screen.findByRole("button", { name: "Esci" });
   fireEvent.change(screen.getByLabelText("Lingua"), { target: { value: "en" } });
 
+  // Owner's decision: what is shown always matches what is saved.
   const alert = await screen.findByRole("alert");
-  expect(alert).toHaveTextContent("Something went wrong. Please try again.");
+  expect(alert).toHaveTextContent("Si è verificato un errore. Riprova.");
   expect(alert).not.toHaveTextContent("Bad gateway");
+  expect(screen.getByLabelText("Lingua")).toHaveValue("it");
+  expect(screen.getByRole("button", { name: "Esci" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
+  expect(document.documentElement.lang).toBe("it");
+  expect(patchBodies(calls)).toEqual([{ language: "en" }]);
+});
+
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-028: an expired session while saving goes back to the previous language with the session message", async () => {
+  browserLanguages(["en-US"]);
+  mockApi({
+    "GET /api/auth/me": () => json(200, user("en")),
+    "PATCH /api/auth/me": notAuthenticated,
+  });
+  render(<App />);
+
+  await screen.findByRole("button", { name: "Sign out" });
+  fireEvent.change(screen.getByLabelText("Language"), { target: { value: "it" } });
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Your session has expired: please sign in again.");
+  expect(screen.getByLabelText("Language")).toHaveValue("en");
+  expect(screen.queryByRole("button", { name: "Esci" })).not.toBeInTheDocument();
 });
