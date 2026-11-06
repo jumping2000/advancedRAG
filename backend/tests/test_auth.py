@@ -227,6 +227,23 @@ async def test_AC_011_deactivated_user_gets_the_same_401_and_no_session(
     assert await session_keys(redis) == []
 
 
+async def test_AC_011_login_username_must_match_exactly(engine: AsyncEngine, api: httpx.AsyncClient) -> None:
+    """Owner's decision: no case folding and no trimming at login (uniqueness on lower(username) is REQ-007)."""
+    await add_user(engine, "mario")
+    async with api:
+        wrong_password = await login(api, "mario", "wrong-password-123")
+        other_case = await login(api, "Mario")
+        upper_case = await login(api, "MARIO")
+        with_spaces = await login(api, " mario ")
+        exact = await login(api, "mario")
+
+    for response in (other_case, upper_case, with_spaces):
+        assert response.status_code == 401
+        assert response.json() == wrong_password.json()
+        assert session_cookies(response) == []
+    assert exact.status_code == 200
+
+
 # AC-012 ---------------------------------------------------------------------------------------------------------------
 
 
