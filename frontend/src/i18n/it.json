@@ -16,6 +16,39 @@
     "it": "Italiano",
     "en": "English"
   },
+  "users": {
+    "menu": "Utenti",
+    "title": "Utenti",
+    "newUser": "Nuovo utente",
+    "username": "Nome utente",
+    "initialPassword": "Password iniziale",
+    "role": "Ruolo",
+    "roles": {
+      "user": "Utente",
+      "admin": "Amministratore"
+    },
+    "create": "Crea utente",
+    "status": "Stato",
+    "actions": "Azioni",
+    "active": "Attivo",
+    "inactive": "Disattivato",
+    "deactivate": "Disattiva",
+    "reactivate": "Riattiva",
+    "resetPassword": "Reimposta password",
+    "resetTitle": "Reimposta la password di {{username}}",
+    "newPassword": "Nuova password",
+    "savePassword": "Salva password",
+    "cancel": "Annulla",
+    "created": "Utente {{username}} creato.",
+    "passwordReset": "Password di {{username}} reimpostata.",
+    "errors": {
+      "username_taken": "Questo nome utente è già usato.",
+      "password_too_short": "La password deve avere almeno 12 caratteri.",
+      "invalid_username": "Il nome utente deve avere da 3 a 64 caratteri tra lettere, cifre, punto, trattino basso e trattino.",
+      "cannot_deactivate_self": "Non puoi disattivare il tuo utente.",
+      "user_not_found": "Utente non trovato."
+    }
+  },
   "errors": {
     "invalid_credentials": "Nome utente o password non validi.",
     "not_authenticated": "Sessione scaduta: accedi di nuovo.",

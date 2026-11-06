@@ -15,6 +15,7 @@ from app.auth.deps import ApiError, api_error_handler, http_error_handler, requi
 from app.auth.sessions import SessionStore
 from app.config import Settings, get_settings
 from app.db.session import create_engine
+from app.users import routes as users
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -39,4 +40,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(StarletteHTTPException, http_error_handler)
     app.include_router(health.router, prefix="/api")
     app.include_router(auth.router, prefix="/api")
+    app.include_router(users.router, prefix="/api")
     return app
