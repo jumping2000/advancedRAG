@@ -18,8 +18,21 @@ import time
 
 # Adapt this list to the project: (name, command, fast?)
 STEPS = [
-    # Backend and frontend steps (format, lint, types, test) are added by the first task of phase 1,
-    # when the code exists and each command has been run by hand.
+    ("backend-format", ["uv", "run", "--directory", "backend", "ruff", "format", "--check", "."], True),
+    ("backend-lint", ["uv", "run", "--directory", "backend", "ruff", "check", "."], True),
+    ("backend-types", ["uv", "run", "--directory", "backend", "mypy"], False),
+    ("frontend-format", ["npm", "--prefix", "frontend", "run", "-s", "format:check"], True),
+    ("frontend-lint", ["npm", "--prefix", "frontend", "run", "-s", "lint"], True),
+    ("frontend-types", ["npm", "--prefix", "frontend", "run", "-s", "typecheck"], False),
+    ("frontend-test", ["npm", "--prefix", "frontend", "run", "-s", "test", "--", "--reporter=default",
+                       "--reporter=junit", "--outputFile.junit=../reports/junit-frontend.xml"], False),
+    # Postgres and Redis for the backend tests (compose.test.yaml); needs Docker
+    ("test-services", ["docker", "compose", "-f", "compose.test.yaml", "up", "-d", "--wait"], False),
+    ("backend-test", ["uv", "run", "--directory", "backend", "pytest", "-q",
+                      "--junitxml=../reports/junit-backend.xml"], False),
+    # Full docker compose stack, built from the working tree
+    ("e2e", ["uv", "run", "--directory", "backend", "pytest", "-q", "-m", "e2e",
+             "--junitxml=../reports/junit-e2e.xml"], False),
     ("secrets", [sys.executable, "scripts/secrets_check.py", "--all"], True),
 ]
 

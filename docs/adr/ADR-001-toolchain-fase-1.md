@@ -24,6 +24,9 @@ Frontend (Node.js LTS, dipendenze gestite con `npm`):
 - `react`, `react-dom`, `react-router-dom`: UI e navigazione tra le pagine.
 - `i18next` + `react-i18next`: testi in italiano e inglese, cambio lingua senza ricaricare la pagina (REQ-011).
 - Sviluppo: `vite`, `typescript`, `vitest` + `@testing-library/react` + `jsdom` (test), `eslint`, `prettier`.
+- Supporto a questi strumenti (autorizzati con T-01, nessun codice in produzione): `@vitejs/plugin-react`,
+  `@types/react`, `@types/react-dom`, `typescript-eslint`, `@eslint/js`, `eslint-plugin-react-hooks`, `globals`,
+  `@testing-library/jest-dom`.
 
 Infrastruttura: immagini `paradedb/paradedb`, `redis`, `nginx`, `python:3.12-slim`, `node` (solo per la build), con
 versione fissata nel Compose e nei Dockerfile.

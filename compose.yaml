@@ -1,0 +1,61 @@
+# advancedRAG stack: docker compose up --build (values from .env, see .env.example)
+name: advancedrag
+services:
+  db:
+    image: paradedb/paradedb:0.26.4-pg17
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_DB: ragdb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d ragdb && psql -U rag -d ragdb -tAc 'select 1'"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  redis:
+    image: redis:7.4.12-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rag:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/ragdb
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?set OLLAMA_BASE_URL in .env}
+      DOCLING_BASE_URL: ${DOCLING_BASE_URL:?set DOCLING_BASE_URL in .env}
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-2}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=10)"]
+      interval: 5s
+      timeout: 12s
+      retries: 30
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:
