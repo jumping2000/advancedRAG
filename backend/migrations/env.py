@@ -1,4 +1,4 @@
-"""Alembic environment: async migrations with the URL given by app.run."""
+"""Alembic environment: async migrations with the URL object given by app.run (config.attributes)."""
 
 import asyncio
 from logging.config import fileConfig
@@ -21,7 +21,7 @@ def run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    engine = create_async_engine(config.get_main_option("sqlalchemy.url") or "")
+    engine = create_async_engine(config.attributes["database_url"])
     async with engine.connect() as connection:
         await connection.run_sync(run_migrations)
     await engine.dispose()

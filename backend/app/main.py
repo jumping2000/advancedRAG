@@ -14,7 +14,7 @@ from app.db.session import create_engine
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    engine = create_engine(settings.database_url)
+    engine = create_engine(settings.sqlalchemy_url)
     redis = Redis.from_url(settings.redis_url)
 
     @asynccontextmanager

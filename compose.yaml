@@ -10,7 +10,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rag -d ragdb && psql -U rag -d ragdb -tAc 'select 1'"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U rag -d ragdb && PGPASSWORD=\"$$POSTGRES_PASSWORD\" psql -h 127.0.0.1 -U rag -d ragdb -tAc 'select 1'"]
       interval: 3s
       timeout: 5s
       retries: 40
@@ -26,7 +26,8 @@ services:
   backend:
     build: ./backend
     environment:
-      DATABASE_URL: postgresql+asyncpg://rag:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/ragdb
+      DATABASE_URL: postgresql+asyncpg://rag@db:5432/ragdb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?set OLLAMA_BASE_URL in .env}
       DOCLING_BASE_URL: ${DOCLING_BASE_URL:?set DOCLING_BASE_URL in .env}
