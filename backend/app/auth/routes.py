@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.auth.deps import SESSION_COOKIE, ApiError, CurrentUser, DbSession, Sessions
 from app.auth.passwords import dummy_hash, verify_password
@@ -49,7 +49,8 @@ async def login(
     session: DbSession,
     store: Sessions,
 ) -> UserOut:
-    user = await session.scalar(select(User).where(func.lower(User.username) == body.username.strip().lower()))
+    # Exact match (owner's decision): no case folding, no trimming.
+    user = await session.scalar(select(User).where(User.username == body.username))
     password_ok = verify_password(body.password, user.password_hash if user else dummy_hash())
     if user is None or not password_ok or not user.is_active:
         raise invalid_credentials()
