@@ -16,6 +16,39 @@
     "it": "Italiano",
     "en": "English"
   },
+  "users": {
+    "menu": "Users",
+    "title": "Users",
+    "newUser": "New user",
+    "username": "Username",
+    "initialPassword": "Initial password",
+    "role": "Role",
+    "roles": {
+      "user": "User",
+      "admin": "Administrator"
+    },
+    "create": "Create user",
+    "status": "Status",
+    "actions": "Actions",
+    "active": "Active",
+    "inactive": "Deactivated",
+    "deactivate": "Deactivate",
+    "reactivate": "Reactivate",
+    "resetPassword": "Reset password",
+    "resetTitle": "Reset the password of {{username}}",
+    "newPassword": "New password",
+    "savePassword": "Save password",
+    "cancel": "Cancel",
+    "created": "User {{username}} created.",
+    "passwordReset": "Password of {{username}} reset.",
+    "errors": {
+      "username_taken": "This username is already taken.",
+      "password_too_short": "The password must be at least 12 characters long.",
+      "invalid_username": "The username must have 3 to 64 characters among letters, digits, dot, underscore and hyphen.",
+      "cannot_deactivate_self": "You cannot deactivate your own user.",
+      "user_not_found": "User not found."
+    }
+  },
   "errors": {
     "invalid_credentials": "Invalid username or password.",
     "not_authenticated": "Your session has expired: please sign in again.",

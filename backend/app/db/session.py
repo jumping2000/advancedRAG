@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 
 def create_engine(database_url: str | URL) -> AsyncEngine:
-    return create_async_engine(database_url, pool_pre_ping=True)
+    # hide_parameters: database errors and statement logs never show the bound values (password hashes, REQ-006).
+    return create_async_engine(database_url, pool_pre_ping=True, hide_parameters=True)
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
