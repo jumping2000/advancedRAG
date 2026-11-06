@@ -1,0 +1,27 @@
+# Postgres (ParadeDB) and Redis for the backend tests: docker compose -f compose.test.yaml up -d --wait
+name: advancedrag-test
+services:
+  db:
+    image: paradedb/paradedb:0.26.4-pg17
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag_test && psql -U rag -d rag_test -tAc 'select 1'"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  redis:
+    image: redis:7.4.12-alpine
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
