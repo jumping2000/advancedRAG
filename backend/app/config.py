@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -17,6 +18,10 @@ class Settings(BaseSettings):
     ollama_base_url: str
     docling_base_url: str
     health_check_timeout_seconds: float = 2.0
+    # First admin, created at startup only when no active admin exists (REQ-004); empty counts as missing.
+    admin_username: str | None = None
+    admin_password: SecretStr | None = None
+    session_idle_timeout_minutes: int = Field(default=480, gt=0)
 
     @property
     def sqlalchemy_url(self) -> URL:

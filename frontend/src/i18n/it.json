@@ -1,1 +1,21 @@
-{}
+{
+  "login": {
+    "title": "Accedi",
+    "username": "Nome utente",
+    "password": "Password",
+    "submit": "Accedi"
+  },
+  "nav": {
+    "logout": "Esci"
+  },
+  "home": {
+    "signedInAs": "Hai effettuato l'accesso come {{username}}."
+  },
+  "errors": {
+    "invalid_credentials": "Nome utente o password non validi.",
+    "not_authenticated": "Sessione scaduta: accedi di nuovo.",
+    "validation_error": "La richiesta non è valida.",
+    "network_error": "Il server non è raggiungibile. Riprova.",
+    "unknown": "Si è verificato un errore. Riprova."
+  }
+}
