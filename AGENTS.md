@@ -7,10 +7,11 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 
 ## Commands
 - Python for the playbook scripts: `python3` (written as `python` in the skills)
-- Setup: defined by the first task of phase 1 (backend and frontend toolchains)
+- Setup: `uv sync --project backend` and `npm ci --prefix frontend`
+- Test services (Postgres and Redis for backend tests): `docker compose -f compose.test.yaml up -d --wait`
 - Full verification (definition of "done"): `python3 scripts/verify.py`
 - Quick verification (only while working): `python3 scripts/verify.py --fast`
-- Single test: defined by the first task of phase 1
+- Single test: `uv run --project backend pytest <path>::<name>` or `npm --prefix frontend run test -- <file>`
 - Local run: `docker compose up --build` (from phase 1)
 
 ## Conventions
@@ -21,6 +22,7 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 ## Rules
 - Do not modify: applied database migrations already merged into `main` (`backend/migrations/versions/`): add a new one
 - Sensitive areas: `backend/app/auth/`, `backend/migrations/`, `compose.yaml`, `nginx/`, `.github/workflows/`
+- Dependencies: only those of `docs/adr/ADR-001-toolchain-fase-1.md`; any other is asked first.
 - Every behaviour change requires a test, written from the acceptance criteria before the code.
 - Never declare a task completed without having run `python3 scripts/verify.py` successfully.
 - Ambiguity or missing requirements: stop and ask, do not assume.
