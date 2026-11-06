@@ -40,6 +40,8 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
                 "OLLAMA_BASE_URL=http://127.0.0.1:9",
                 "DOCLING_BASE_URL=http://127.0.0.1:9",
                 "HEALTH_CHECK_TIMEOUT_SECONDS=1",
+                "ADMIN_USERNAME=e2eadmin",
+                "ADMIN_PASSWORD=e2e-admin-password",
             ]
         )
         + "\n",
