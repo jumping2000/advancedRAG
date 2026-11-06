@@ -1,10 +1,11 @@
 # SPEC-2026-11-06-fase-1-fondazioni
 """AC-003, AC-004 (REQ-002): Nginx answers HTTPS when cert.pem and key.pem are in nginx/certs/, otherwise HTTP only.
 
-The compose stack runs with its own project name and host ports, so it never collides with test_stack.py. The
-certificate is self-signed and generated at runtime with openssl into a temporary folder: no key is ever written
-inside the repository. The X-Forwarded-Proto cases (plan, review focus) run the same Nginx image in front of a fake
-backend that echoes the request headers it receives.
+compose.yaml alone publishes only HTTP_PORT (REQ-001); the override compose.tls.yaml adds HTTPS_PORT. The compose
+stack runs with both files, its own project name and host ports, so it never collides with test_stack.py. The
+certificate is self-signed and generated at runtime by openssl inside a container, into a temporary folder: no key is
+ever written inside the repository and the host needs no openssl. The X-Forwarded-Proto cases (plan, review focus)
+and the half-configured folder run the same Nginx image in front of a fake backend that echoes the request headers.
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ PROJECT = "advancedrag-e2e-tls"
 HTTP_PORT = 18180
 HTTPS_PORT = 18543
 NGINX_IMAGE = f"{PROJECT}-nginx"
+OPENSSL_IMAGE = "paradedb/paradedb:0.26.4-pg17"  # already used by compose.yaml, ships openssl
+COMPOSE_FILES = ("compose.yaml", "compose.tls.yaml")
 ECHO_HTTP_PORT = 18181
 ECHO_HTTPS_PORT = 18544
 ECHO_NETWORK = f"{PROJECT}-echo"
@@ -76,11 +79,19 @@ def write_env_file(path: Path, *, https_port: int | None) -> Path:
 
 
 def generate_certificate(folder: Path) -> Path:
-    openssl = shutil.which("openssl")
-    assert openssl is not None, "openssl is required by the TLS e2e tests (it generates a self-signed certificate)"
     folder.mkdir(parents=True, exist_ok=True)
+    # Same owner as the test process where the OS has one, so the files can be copied and removed afterwards
+    user = ["--user", f"{os.getuid()}:{os.getgid()}"] if hasattr(os, "getuid") else []
     run(
-        openssl,
+        "docker",
+        "run",
+        "--rm",
+        *user,
+        "-v",
+        f"{folder}:/certs",
+        "--entrypoint",
+        "openssl",
+        OPENSSL_IMAGE,
         "req",
         "-x509",
         "-newkey",
@@ -93,10 +104,11 @@ def generate_certificate(folder: Path) -> Path:
         "-addext",
         "subjectAltName=IP:127.0.0.1,DNS:localhost",
         "-keyout",
-        str(folder / "key.pem"),
+        "/certs/key.pem",
         "-out",
-        str(folder / "cert.pem"),
+        "/certs/cert.pem",
     )
+    assert (folder / "cert.pem").is_file() and (folder / "key.pem").is_file(), "certificate generation failed"
     return folder / "cert.pem"
 
 
@@ -144,8 +156,7 @@ class Stack:
             PROJECT,
             "--env-file",
             str(self.env_file),
-            "-f",
-            str(ROOT / "compose.yaml"),
+            *compose_file_args(*COMPOSE_FILES),
             "-f",
             str(self.override),
             *args,
@@ -171,7 +182,8 @@ class Stack:
 
 @pytest.fixture(scope="module")
 def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
-    assert (ROOT / "compose.yaml").is_file(), "compose.yaml is missing"
+    for name in COMPOSE_FILES:
+        assert (ROOT / name).is_file(), f"{name} is missing"
     stack = Stack(tmp_path_factory.mktemp("e2e-tls"))
     try:
         yield stack
@@ -179,7 +191,15 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
         stack.down()
 
 
-def compose_config(env_file: Path) -> dict[str, object]:
+def compose_file_args(*names: str) -> list[str]:
+    args: list[str] = []
+    for name in names:
+        assert (ROOT / name).is_file(), f"{name} is missing"
+        args += ["-f", str(ROOT / name)]
+    return args
+
+
+def compose_config(env_file: Path, *files: str) -> dict[str, object]:
     output = run(
         "docker",
         "compose",
@@ -187,8 +207,7 @@ def compose_config(env_file: Path) -> dict[str, object]:
         PROJECT,
         "--env-file",
         str(env_file),
-        "-f",
-        str(ROOT / "compose.yaml"),
+        *compose_file_args(*files),
         "config",
         "--format",
         "json",
@@ -204,26 +223,36 @@ def nginx_service(config: dict[str, object]) -> dict[str, list[dict[str, object]
     return nginx
 
 
-# --- AC-003: the certificate folder and the HTTPS port in compose.yaml ---
+# --- AC-003: the certificate folder in compose.yaml, the HTTPS port in compose.tls.yaml ---
+
+
+def published_ports(nginx: dict[str, list[dict[str, object]]]) -> set[tuple[str, object]]:
+    return {(str(p.get("published")), p.get("target")) for p in nginx.get("ports", [])}
 
 
 def test_AC_003_compose_mounts_nginx_certs_into_the_nginx_container(tmp_path: Path) -> None:
-    nginx = nginx_service(compose_config(write_env_file(tmp_path / ".env", https_port=HTTPS_PORT)))
+    nginx = nginx_service(compose_config(write_env_file(tmp_path / ".env", https_port=HTTPS_PORT), "compose.yaml"))
     mounts = {(Path(str(v["source"])), v["target"]) for v in nginx.get("volumes", []) if v.get("type") == "bind"}
     assert (ROOT / "nginx" / "certs", "/etc/nginx/certs") in mounts
 
 
-def test_AC_003_compose_publishes_https_port_to_nginx_443(tmp_path: Path) -> None:
-    nginx = nginx_service(compose_config(write_env_file(tmp_path / ".env", https_port=HTTPS_PORT)))
-    published = {(str(p.get("published")), p.get("target")) for p in nginx.get("ports", [])}
-    assert (str(HTTPS_PORT), 443) in published
-    assert (str(HTTP_PORT), 80) in published
+def test_AC_004_compose_yaml_alone_publishes_only_the_http_port(tmp_path: Path) -> None:
+    nginx = nginx_service(compose_config(write_env_file(tmp_path / ".env", https_port=HTTPS_PORT), "compose.yaml"))
+    assert published_ports(nginx) == {(str(HTTP_PORT), 80)}
+
+
+def test_AC_003_compose_tls_override_publishes_https_port_to_nginx_443(tmp_path: Path) -> None:
+    env_file = write_env_file(tmp_path / ".env", https_port=HTTPS_PORT)
+    nginx = nginx_service(compose_config(env_file, *COMPOSE_FILES))
+    assert published_ports(nginx) == {(str(HTTP_PORT), 80), (str(HTTPS_PORT), 443)}
+    environment = nginx.get("environment")
+    assert isinstance(environment, dict)
+    assert environment.get("HTTPS_PORT") == str(HTTPS_PORT)
 
 
 def test_AC_003_https_port_defaults_to_443(tmp_path: Path) -> None:
-    nginx = nginx_service(compose_config(write_env_file(tmp_path / ".env", https_port=None)))
-    published = {(str(p.get("published")), p.get("target")) for p in nginx.get("ports", [])}
-    assert ("443", 443) in published
+    nginx = nginx_service(compose_config(write_env_file(tmp_path / ".env", https_port=None), *COMPOSE_FILES))
+    assert ("443", 443) in published_ports(nginx)
 
 
 def test_AC_003_certificate_and_key_in_nginx_certs_are_ignored_by_git() -> None:
@@ -371,3 +400,24 @@ def test_AC_003_redirect_to_default_https_port_has_no_port_in_location(nginx_ima
         page = httpx.get(f"http://127.0.0.1:{ECHO_HTTP_PORT}/kbs", timeout=5, follow_redirects=False)
         assert page.status_code == 301
         assert page.headers["location"] == "https://127.0.0.1/kbs"
+
+
+@pytest.mark.parametrize(("present", "missing"), [("cert.pem", "key.pem"), ("key.pem", "cert.pem")])
+def test_AC_004_only_one_of_cert_and_key_stays_http_only_and_names_the_missing_file(
+    nginx_image: str, stack: Stack, tmp_path: Path, present: str, missing: str
+) -> None:
+    half = tmp_path / "certs-half"
+    half.mkdir()
+    shutil.copyfile(stack.cert.parent / present, half / present)
+    with nginx_in_front_of_echo_backend(nginx_image, half, HTTPS_PORT):
+        url = f"http://127.0.0.1:{ECHO_HTTP_PORT}/api/echo"
+        wait_for(lambda: httpx.get(url, timeout=5).status_code == 200, "nginx in front of the echo backend")
+
+        page = httpx.get(f"http://127.0.0.1:{ECHO_HTTP_PORT}/", timeout=5, follow_redirects=False)
+        assert page.status_code == 200
+        assert FRONTEND_MARKER in page.text
+        with pytest.raises(httpx.TransportError):
+            httpx.get(f"https://127.0.0.1:{ECHO_HTTPS_PORT}/", timeout=5, verify=trust(stack.cert))
+
+        logs = run("docker", "logs", ECHO_NGINX)
+        assert f"TLS disabled: {missing} missing in /etc/nginx/certs" in logs.stdout + logs.stderr
