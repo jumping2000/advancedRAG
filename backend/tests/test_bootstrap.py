@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from app import run
 from app.auth.bootstrap import MissingAdminConfig, ensure_admin
-from app.auth.passwords import hash_password
+from app.auth.passwords import MIN_PASSWORD_LENGTH, hash_password
 from app.config import Settings, get_settings
 from app.db.models import User
 from app.main import create_app
@@ -282,3 +282,71 @@ async def test_AC_009_existing_active_admin_needs_no_variables(engine: AsyncEngi
     async with engine.connect() as connection:
         admins = await connection.scalar(select(func.count()).select_from(User).where(User.role == "admin"))
     assert admins == 1
+
+
+# Startup validation of the first admin (owner's decision: REQ-007 username rules, MIN_PASSWORD_LENGTH) ---------------
+
+
+@pytest.mark.parametrize(
+    "username",
+    ["ab", "a" * 65, "first admin", "admin@example", "admin/root", "admin!"],
+)
+async def test_AC_009_invalid_admin_username_stops_naming_it(engine: AsyncEngine, username: str) -> None:
+    settings = make_settings(admin_username=username, admin_password=FIRST_PASSWORD)
+    with pytest.raises(MissingAdminConfig) as raised:
+        await bootstrap(engine, settings)
+
+    assert raised.value.var_name == "ADMIN_USERNAME"
+    assert "ADMIN_USERNAME" in str(raised.value)
+    assert await users() == []
+
+
+@pytest.mark.parametrize("username", ["abc", "a" * 64, "first.admin_01-x", "ADMIN"])
+async def test_AC_007_valid_admin_username_is_created(engine: AsyncEngine, username: str) -> None:
+    await bootstrap(engine, make_settings(admin_username=username, admin_password=FIRST_PASSWORD))
+
+    assert [(name, role, active) for name, role, active, _ in await users()] == [(username, "admin", True)]
+
+
+async def test_AC_009_admin_password_shorter_than_12_stops_naming_it(engine: AsyncEngine) -> None:
+    short = "a" * (MIN_PASSWORD_LENGTH - 1)
+    with pytest.raises(MissingAdminConfig) as raised:
+        await bootstrap(engine, make_settings(admin_username=ADMIN, admin_password=short))
+
+    assert raised.value.var_name == "ADMIN_PASSWORD"
+    assert "ADMIN_PASSWORD" in str(raised.value)
+    assert short not in str(raised.value)
+    assert await users() == []
+
+
+async def test_AC_007_admin_password_of_exactly_12_is_accepted(engine: AsyncEngine) -> None:
+    password = "b" * MIN_PASSWORD_LENGTH
+    await bootstrap(engine, make_settings(admin_username=ADMIN, admin_password=password))
+
+    assert await login_status(ADMIN, password) == 200
+
+
+async def test_AC_008_invalid_variables_are_ignored_when_an_active_admin_exists(engine: AsyncEngine) -> None:
+    await add_user(engine, "boss", FIRST_PASSWORD, role="admin")
+    before = await users()
+
+    await bootstrap(engine, make_settings(admin_username="x", admin_password="short"))
+
+    assert await users() == before
+
+
+def test_AC_009_short_admin_password_stops_the_backend_naming_it(empty_database: None, tmp_path: Path) -> None:
+    result = run_backend(tmp_path, ADMIN_USERNAME=ADMIN, ADMIN_PASSWORD="elevenchars")
+
+    assert result.returncode != 0
+    assert "ADMIN_PASSWORD" in result.stderr + result.stdout
+    assert "elevenchars" not in result.stderr + result.stdout
+    assert asyncio.run(users()) == []
+
+
+def test_AC_009_invalid_admin_username_stops_the_backend_naming_it(empty_database: None, tmp_path: Path) -> None:
+    result = run_backend(tmp_path, ADMIN_USERNAME="first admin", ADMIN_PASSWORD=FIRST_PASSWORD)
+
+    assert result.returncode != 0
+    assert "ADMIN_USERNAME" in result.stderr + result.stdout
+    assert asyncio.run(users()) == []
