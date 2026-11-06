@@ -12,7 +12,7 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rag -d rag_test && psql -U rag -d rag_test -tAc 'select 1'"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U rag -d rag_test && PGPASSWORD=rag psql -h 127.0.0.1 -U rag -d rag_test -tAc 'select 1'"]
       interval: 2s
       timeout: 5s
       retries: 30

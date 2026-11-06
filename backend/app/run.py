@@ -5,22 +5,24 @@ from pathlib import Path
 import uvicorn
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.engine import URL
 
 from app.config import get_settings
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
-def migrate(database_url: str) -> None:
+def migrate(database_url: URL) -> None:
     config = Config(str(BACKEND_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
-    config.set_main_option("sqlalchemy.url", database_url)
+    # Passed as an object, not through the ini file: a password with "%" would break configparser interpolation.
+    config.attributes["database_url"] = database_url
     command.upgrade(config, "head")
 
 
 def main() -> None:
     settings = get_settings()
-    migrate(settings.database_url)
+    migrate(settings.sqlalchemy_url)
     uvicorn.run(
         "app.main:create_app",
         factory=True,
