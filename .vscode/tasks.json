@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "verify",
+      "type": "process",
+      "command": "python",
+      "args": ["scripts/verify.py"],
+      "windows": { "command": "py", "args": ["-3", "scripts/verify.py"] },
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "verify (fast)",
+      "type": "process",
+      "command": "python",
+      "args": ["scripts/verify.py", "--fast"],
+      "windows": { "command": "py", "args": ["-3", "scripts/verify.py", "--fast"] },
+      "group": "test",
+      "presentation": { "reveal": "silent", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    }
+  ]
+}

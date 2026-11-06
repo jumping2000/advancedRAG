@@ -1,0 +1,21 @@
+# Optional (offered by sdd-start when the repository has a GitHub remote): runs the project's definition of "done"
+# on every PR, on a clean machine. Its status is shown before the merge question. Add windows-latest to the matrix if
+# someone develops on Windows; in regulated contexts pin the actions by SHA.
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # Backend and frontend toolchains are added by the first task of phase 1.
+      - run: python scripts/verify.py
