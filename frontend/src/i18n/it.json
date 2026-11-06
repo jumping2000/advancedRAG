@@ -11,6 +11,11 @@
   "home": {
     "signedInAs": "Hai effettuato l'accesso come {{username}}."
   },
+  "language": {
+    "label": "Lingua",
+    "it": "Italiano",
+    "en": "English"
+  },
   "errors": {
     "invalid_credentials": "Nome utente o password non validi.",
     "not_authenticated": "Sessione scaduta: accedi di nuovo.",

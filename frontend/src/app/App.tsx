@@ -3,6 +3,7 @@ import { I18nextProvider, useTranslation } from "react-i18next";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { AuthProvider, useAuth } from "../auth/AuthContext";
+import { LanguageSelector } from "../components/LanguageSelector";
 import { browserLanguage, i18n } from "../i18n";
 import { LoginPage } from "../pages/LoginPage";
 
@@ -23,6 +24,7 @@ function Layout() {
     <>
       <header>
         <h1>advancedRAG</h1>
+        <LanguageSelector />
         {user && (
           <nav>
             <span>{user.username}</span>
