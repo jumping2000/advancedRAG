@@ -23,7 +23,13 @@ if [ -f "$CERTS_DIR/cert.pem" ] && [ -f "$CERTS_DIR/key.pem" ]; then
     echo "entrypoint-tls: cert.pem and key.pem found in $CERTS_DIR: HTTPS on port $HTTPS_PORT, HTTP redirected"
 else
     cp "$SOURCE_DIR/default.conf.template" "$TEMPLATE"
-    echo "entrypoint-tls: no cert.pem and key.pem in $CERTS_DIR: HTTP only"
+    if [ -f "$CERTS_DIR/cert.pem" ]; then
+        echo "entrypoint-tls: TLS disabled: key.pem missing in $CERTS_DIR: HTTP only"
+    elif [ -f "$CERTS_DIR/key.pem" ]; then
+        echo "entrypoint-tls: TLS disabled: cert.pem missing in $CERTS_DIR: HTTP only"
+    else
+        echo "entrypoint-tls: no cert.pem and key.pem in $CERTS_DIR: HTTP only"
+    fi
 fi
 
 exec /docker-entrypoint.sh "$@"

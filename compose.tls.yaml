@@ -1,0 +1,9 @@
+# HTTPS override (REQ-002): docker compose -f compose.yaml -f compose.tls.yaml up --build
+# Publishes HTTPS_PORT (default 443). Nginx answers HTTPS when nginx/certs/ holds cert.pem and key.pem and then
+# redirects HTTP to https on that port; without them it stays HTTP only.
+services:
+  nginx:
+    ports:
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      HTTPS_PORT: ${HTTPS_PORT:-443}
