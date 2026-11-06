@@ -1,4 +1,4 @@
-"""Authentication API: login, logout, current user (REQ-005)."""
+"""Authentication API: login, logout, current user and its language (REQ-005, REQ-011)."""
 
 import uuid
 from typing import Literal
@@ -17,6 +17,11 @@ router = APIRouter(prefix="/auth")
 class LoginIn(BaseModel):
     username: str
     password: str
+
+
+class LanguageIn(BaseModel):
+    # Only the language: any other field of the body is ignored, so this route never changes role or status.
+    language: Literal["it", "en"]
 
 
 class UserOut(BaseModel):
@@ -77,4 +82,12 @@ async def logout(
 
 @router.get("/me")
 async def me(user: CurrentUser) -> UserOut:
+    return UserOut.model_validate(user)
+
+
+@router.patch("/me")
+async def set_language(body: LanguageIn, user: CurrentUser, session: DbSession) -> UserOut:
+    """Save the language chosen with the selector in the profile: the next login finds it (REQ-011)."""
+    user.language = body.language
+    await session.commit()
     return UserOut.model_validate(user)

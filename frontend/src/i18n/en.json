@@ -11,6 +11,11 @@
   "home": {
     "signedInAs": "You are signed in as {{username}}."
   },
+  "language": {
+    "label": "Language",
+    "it": "Italiano",
+    "en": "English"
+  },
   "errors": {
     "invalid_credentials": "Invalid username or password.",
     "not_authenticated": "Your session has expired: please sign in again.",
