@@ -1,1 +1,21 @@
-{}
+{
+  "login": {
+    "title": "Sign in",
+    "username": "Username",
+    "password": "Password",
+    "submit": "Sign in"
+  },
+  "nav": {
+    "logout": "Sign out"
+  },
+  "home": {
+    "signedInAs": "You are signed in as {{username}}."
+  },
+  "errors": {
+    "invalid_credentials": "Invalid username or password.",
+    "not_authenticated": "Your session has expired: please sign in again.",
+    "validation_error": "The request is not valid.",
+    "network_error": "The server cannot be reached. Please try again.",
+    "unknown": "Something went wrong. Please try again."
+  }
+}
