@@ -127,7 +127,7 @@ async def upload_document(request: Request, kb_id: KbId, repo: Repository) -> Do
     max_bytes = request.app.state.settings.max_upload_size_mb * MIB
     announced = request.headers.get("content-length", "")
     # Beyond the limit plus 1 MB of multipart framing the body is not even read.
-    if announced.isdigit() and int(announced) > max_bytes + MIB:
+    if announced.isascii() and announced.isdigit() and int(announced) > max_bytes + MIB:
         raise file_too_large()
     try:
         async with request.form(max_files=1) as form:
