@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     # A document with fewer non-white characters than this is UNSUPPORTED (REQ-009).
     min_extracted_chars: int = Field(default=50, ge=0)
     # The original of a FAILED document is kept this many days after it failed, for a retry (REQ-017); only the worker
-    # reads it.
-    failed_original_retention_days: int = Field(default=7, ge=1)
+    # reads it. At most ten years: a larger value would overflow a date.
+    failed_original_retention_days: int = Field(default=7, ge=1, le=3650)
     chunk_target_words: int = 300
     chunk_min_words: int = 50
     chunk_max_words: int = 450

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Chunk, Document
 
 CREATE_ATTEMPTS = 3
+ID_BATCH_SIZE = 1000
 
 
 class DuplicateDocument(Exception):
@@ -79,15 +80,24 @@ class DocumentRepository:
             query = query.where(Document.updated_at < changed_before)
         return list((await self.session.scalars(query)).all())
 
-    async def existing_ids(self, ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
-        """For the worker: which of the ids are documents."""
-        if not ids:
-            return set()
-        return set((await self.session.scalars(select(Document.id).where(Document.id.in_(ids)))).all())
-
     async def statuses(self, ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, str]:
-        """Skeleton (T-06): the status of each of the ids that is a document, looked up in batches."""
-        return {}
+        """For the worker: the status of each of the ids that is a document. The ids go in batches, because one
+        statement takes at most 32767 arguments."""
+        found: dict[uuid.UUID, str] = {}
+        for start in range(0, len(ids), ID_BATCH_SIZE):
+            batch = ids[start : start + ID_BATCH_SIZE]
+            rows = await self.session.execute(select(Document.id, Document.status).where(Document.id.in_(batch)))
+            found.update({row.id: row.status for row in rows})
+        return found
+
+    async def is_failed_before(self, document_id: uuid.UUID, moment: datetime) -> bool:
+        """For the worker: whether the document is FAILED and has been since before `moment`."""
+        found = await self.session.scalar(
+            select(Document.id).where(
+                Document.id == document_id, Document.status == "FAILED", Document.updated_at < moment
+            )
+        )
+        return found is not None
 
     async def delete(self, kb_id: uuid.UUID, document_id: uuid.UUID) -> bool:
         deleted = await self.session.scalar(

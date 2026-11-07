@@ -3,9 +3,14 @@
 `cleanup_originals` (at the start of the worker and every hour) deletes files only, never a row or a chunk:
 - the original of a FAILED document once more than FAILED_ORIGINAL_RETENTION_DAYS days have passed since it failed
   (`documents.updated_at`, set by the FAILED transition; a retry that fails again starts the time again); the document
-  stays FAILED with its reason;
-- the files of UPLOAD_DIR that have no document and were last written more than one hour ago: a file named by an id
-  that is not a document, a file whose name is not an id, and a `{id}.part` of an upload that never finished.
+  stays FAILED with its reason. The document is read again just before its file is deleted, so a Retry (or a new
+  failure) after the list was made keeps its original; a Retry in the very instant between that check and the deletion
+  is not excluded, and then the job fails the document for the missing original (the admin uploads it again);
+- the files of UPLOAD_DIR named exactly `{uuid}` (a canonical lower case id) that have no document, and the
+  `{uuid}.part` of an upload that never finished, when they were last written more than one hour ago; any other name is
+  left alone, the folder is not ours to tidy;
+- the original that survives in a READY or UNSUPPORTED document, whatever its age: REQ-017 says it must not exist, and
+  the worker can die between the status mark and the removal.
 The original of a QUEUED or PROCESSING document is never deleted, however old.
 
 `recover_interrupted` makes FAILED `unexpected_error` ("Processing was interrupted") every document left PROCESSING,
@@ -41,6 +46,7 @@ logger = logging.getLogger(__name__)
 # A file without a document must be older than this to be swept: an upload in progress is not one.
 ORPHAN_MIN_AGE = timedelta(hours=1)
 _PART_SUFFIX = ".part"
+_FINISHED = ("READY", "UNSUPPORTED")
 INTERRUPTED_MESSAGE = "Processing was interrupted"
 
 
@@ -53,7 +59,9 @@ class CleanupReport:
 
 
 async def cleanup_originals(settings: Settings, now: datetime) -> CleanupReport:
-    """Delete the expired originals of FAILED documents and the files without a document; `now` is injected."""
+    """Delete the originals past the rules (see the module docstring); `now` is injected. `expired_originals` counts
+    the originals of expired FAILED documents and those of READY or UNSUPPORTED ones, `orphan_files` the files that
+    had no document."""
     storage = UploadStorage(settings.upload_dir)
     cutoff = now - timedelta(days=settings.failed_original_retention_days)
     engine = create_engine(settings.sqlalchemy_url)
@@ -62,32 +70,36 @@ async def cleanup_originals(settings: Settings, now: datetime) -> CleanupReport:
             repo = DocumentRepository(session)
             # The files are listed before the rows are read: a listed file had its row inserted before it was renamed
             # from `.part`, so a missing row means a deleted document.
-            old_files = await asyncio.to_thread(storage.orphans, ORPHAN_MIN_AGE, now)
-            expired = await repo.ids_in_status("FAILED", changed_before=cutoff)
-            named = {path: _document_id(path) for path in old_files}
-            existing = await repo.existing_ids([found for found in named.values() if found is not None])
+            listed = await asyncio.to_thread(storage.orphans, timedelta(0), now)
+            old = set(await asyncio.to_thread(storage.orphans, ORPHAN_MIN_AGE, now))
+            originals = {path: found for path in listed if (found := _canonical_id(path.name)) is not None}
+            statuses = await repo.statuses(list(originals.values()))
+            parts = [path for path in old if _is_part(path)]
+            without_document = [path for path, found in originals.items() if path in old and found not in statuses]
+            finished = [path for path, found in originals.items() if statuses.get(found) in _FINISHED]
+            removed_orphans = await asyncio.to_thread(_delete_files, [*parts, *without_document])
+            removed_originals = await asyncio.to_thread(_delete_files, finished)
+            for document_id in await repo.ids_in_status("FAILED", changed_before=cutoff):
+                if await repo.is_failed_before(document_id, cutoff):
+                    removed_originals += await asyncio.to_thread(_delete_files, [storage.path(document_id)])
     finally:
         await engine.dispose()
-    expired_paths = [storage.path(document_id) for document_id in expired]
-    orphan_paths = [path for path, found in named.items() if found is None or found not in existing]
-    removed_originals = await asyncio.to_thread(_delete_files, expired_paths)
-    removed_orphans = await asyncio.to_thread(_delete_files, orphan_paths)
-    logger.info(
-        "cleanup: %d expired originals, %d files without a document deleted", removed_originals, removed_orphans
-    )
+    logger.info("cleanup: %d originals, %d files without a document deleted", removed_originals, removed_orphans)
     return CleanupReport(expired_originals=removed_originals, orphan_files=removed_orphans)
 
 
-def _document_id(path: Path) -> uuid.UUID | None:
-    """The document an original belongs to, from its name; None for a file that cannot be an original: any name that is
-    not an id in its canonical form, and an unfinished `{id}.part` (its upload is over, whatever the document)."""
-    if path.name.endswith(_PART_SUFFIX):
-        return None
+def _canonical_id(name: str) -> uuid.UUID | None:
+    """The id a file name is made of, only when the name is exactly that id in canonical lower case."""
     try:
-        found = uuid.UUID(path.name)
+        found = uuid.UUID(name)
     except ValueError:
         return None
-    return found if str(found) == path.name else None
+    return found if str(found) == name else None
+
+
+def _is_part(path: Path) -> bool:
+    """`{uuid}.part`: the file of an upload that is being written (or never finished)."""
+    return path.name.endswith(_PART_SUFFIX) and _canonical_id(path.name.removesuffix(_PART_SUFFIX)) is not None
 
 
 def _delete_files(paths: Iterable[Path]) -> int:

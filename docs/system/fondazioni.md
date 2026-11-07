@@ -51,16 +51,25 @@ can leave one: there is one worker) into FAILED `unexpected_error` "Processing w
 that already has a job just gets a second one, and the claim at the start of the job lets only one work.
 `cleanup_originals` deletes files only, never a row or a chunk: the original of a FAILED document more than
 `FAILED_ORIGINAL_RETENTION_DAYS` days after it failed (`documents.updated_at`, the FAILED transition; a retry that
-fails again starts the time again; the document stays FAILED with its reason), and every file of `UPLOAD_DIR` that has
-no document and was last written more than one hour ago (a `{id}.part` of an upload that never finished and a file whose
-name is not an id included). The original of a QUEUED or PROCESSING document is never deleted. The same cleanup then
-runs every hour in a daemon thread (`worker-cleanup`, an event loop per run).
+fails again starts the time again; the document stays FAILED with its reason; the document is read again just before
+its file is deleted, so a Retry after the list was made keeps its original, and a Retry in the instant between that
+check and the deletion is not excluded: the job then fails the document for the missing original); the files named
+exactly `{uuid}` (canonical lower case) that have no document, and the `{uuid}.part` of an upload that never finished,
+when they were last written more than one hour ago (any other name in `UPLOAD_DIR` is left alone); and the original
+that survives in a READY or UNSUPPORTED document, whatever its age (the worker can die between the status mark and the
+removal). The original of a QUEUED or PROCESSING document is never deleted. The same cleanup then runs every hour in a
+daemon thread (`worker-cleanup`, an event loop per run).
 
 A document deleted while a job processes it (REQ-019) is not resurrected: `persist_chunks` locks the document row and
 raises `DocumentGone` when it is gone (the delete waits for that lock and takes the chunks with it by cascade), the
 READY, UNSUPPORTED and FAILED marks change only a PROCESSING row, and the original is removed by the delete itself, so
 a job that finds neither the row nor the file ends quietly and writes nothing. A job that exceeds the 3600 s timeout of
-the queue (`JobTimeoutException`) ends FAILED `unexpected_error` "The processing time limit was exceeded".
+the queue ends FAILED `unexpected_error` "The processing time limit was exceeded" (chunks deleted, original kept). RQ's
+`SimpleWorker` enforces the timeout with SIGALRM, whose handler raises `JobTimeoutException` in the main thread: while
+the event loop is idle (waiting for Docling or Ollama, the usual case) the exception leaves `asyncio.run` and the
+pipeline never sees it, so `process_document_job` catches it around `asyncio.run` and calls `fail_after_timeout`
+(verified with a real RQ worker and a 5 s timeout, `test_worker_recovery.py`); the pipeline's own branch covers the case
+where the signal lands in its code.
 
 Attempts (REQ-016, `app/ingestion/retry.py`): the Docling call and each group of embeddings are repeated on their own,
 only after a temporary error (connection refused, timeout, 5xx, 429), up to `INGESTION_MAX_ATTEMPTS` (3) attempts in
@@ -154,7 +163,7 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   `EMBEDDING_BATCH_SIZE` (16, at least 1) and `EMBEDDING_TIMEOUT_SECONDS` (120, above 0) for the worker, and, only for
   the worker (the backend does not receive them), `DOCLING_API_KEY` (a secret, empty in `.env.example`; blank means no key),
   `DOCLING_TIMEOUT_SECONDS` (600, above 0), `INGESTION_MAX_ATTEMPTS` (3, at least 1), `INGESTION_RETRY_BACKOFF_SECONDS`
-  (10, 0 or more), `MIN_EXTRACTED_CHARS` (50, 0 or more), `FAILED_ORIGINAL_RETENTION_DAYS` (7, at least 1: how long the original of a FAILED
+  (10, 0 or more), `MIN_EXTRACTED_CHARS` (50, 0 or more), `FAILED_ORIGINAL_RETENTION_DAYS` (7, from 1 to 3650: how long the original of a FAILED
   document is kept after it failed) and `DOCLING_INCLUDE_IMAGES` (false: Docling is not asked to
   extract images; an interface switch for it is deferred to the settings page of phase 4).
 - The retry route (phase 2, T-05) is the second POST without a JSON body: a POST with no `Content-Type` passes
@@ -396,11 +405,11 @@ erDiagram
 - Three attempts of up to `DOCLING_TIMEOUT_SECONDS` (600 s) plus the waits can reach the 3600 s timeout of the job; keep
   `INGESTION_MAX_ATTEMPTS` small. docling-serve has its own limit for a synchronous conversion
   (`DOCLING_SERVE_MAX_SYNC_WAIT` on the server) that can answer 504 before the client timeout: raise it with the client.
-- There is one worker (phase 2, T-06): a second worker starting while the first is processing a document would make that
-  document FAILED "Processing was interrupted" (the start-up cannot tell its own dead predecessor from a live peer), so
-  the `worker` service is not scaled.
-- The hourly sweep deletes every file of `UPLOAD_DIR` that is older than an hour and has no document, whatever its name:
-  the folder is the `uploads` volume and holds nothing else.
+- There is one worker (phase 2, T-06, accepted for v1): a second worker starting while the first is processing a
+  document would make that document FAILED "Processing was interrupted" (the start-up cannot tell its own dead
+  predecessor from a live peer), so the `worker` service is never scaled.
+- The hourly sweep leaves alone any file of `UPLOAD_DIR` that is not named exactly `{uuid}` or `{uuid}.part`: a stray file
+  with another name stays until someone removes it.
 
 ## Characterization tests
 - none: the area was built from the spec (greenfield); its acceptance tests are listed under References.
