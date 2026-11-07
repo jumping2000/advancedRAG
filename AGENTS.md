@@ -14,6 +14,7 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 - Single test: `uv run --project backend pytest <path>::<name>` or `npm --prefix frontend run test -- <file>`
 - Local run: `docker compose up --build` (from phase 1); with HTTPS:
   `docker compose -f compose.yaml -f compose.tls.yaml up --build` plus `nginx/certs/cert.pem` and `key.pem`
+- Worker of the ingestion queue: Compose service `worker` (`python -m app.worker`)
 - End-to-end tests only (full stack, part of verify): `uv run --directory backend pytest -m e2e`
 - Chromium for the Playwright e2e: `uv run --frozen --directory backend playwright install --with-deps chromium` (CI);
   where a Chromium is already installed, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to it instead
@@ -34,8 +35,10 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 
 ## Rules
 - Do not modify: applied database migrations already merged into `main` (`backend/migrations/versions/`): add a new one
-- Sensitive areas: `backend/app/auth/`, `backend/migrations/`, `compose.yaml`, `nginx/`, `.github/workflows/`
-- Dependencies: only those of `docs/adr/ADR-001-toolchain-fase-1.md`; any other is asked first.
+- Sensitive areas: `backend/app/auth/`, `backend/app/documents/` (upload validation, file storage), `backend/migrations/`,
+  `compose.yaml`, `nginx/`, `.github/workflows/`
+- Dependencies: only those of `docs/adr/ADR-001-toolchain-fase-1.md` and `docs/adr/ADR-002-ingestion.md`; any other is
+  asked first.
 - Every behaviour change requires a test, written from the acceptance criteria before the code.
 - Never declare a task completed without having run `python3 scripts/verify.py` successfully.
 - Ambiguity or missing requirements: stop and ask, do not assume.
@@ -43,6 +46,11 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 - Choices and the merge question are asked as options to select (`sdd-start/references/interaction.md`).
 - Every access to a KB, its documents or conversations goes through `KnowledgeBaseRepository.list_for`/`get_for` or
   a query joined with `kb_members` in the same SQL statement, with an isolation test that calls it directly.
+- Uploaded originals live only in `UPLOAD_DIR`, named by the document id; they are deleted at READY or UNSUPPORTED, when
+  the document or its KB is deleted, and after `FAILED_ORIGINAL_RETENTION_DAYS` if FAILED. Logs never contain document
+  content, file names or vectors.
+- Vectors of different indexing profiles never mix: every vector search filters on `profile_id` and uses the profile's HNSW
+  expression `embedding::vector(N)`.
 - Automated tests never call the real Ollama, Docling or OpenAI: they use fakes; real services only in opt-in live tests.
 
 ## Decision rights
