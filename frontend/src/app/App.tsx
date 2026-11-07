@@ -1,21 +1,19 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { I18nextProvider, useTranslation } from "react-i18next";
 import { BrowserRouter, Link, Navigate, Route, Routes } from "react-router-dom";
 
-import { AuthProvider, useAuth } from "../auth/AuthContext";
+import { AuthProvider, useAuth, type User } from "../auth/AuthContext";
 import { LanguageSelector } from "../components/LanguageSelector";
 import { browserLanguage, i18n } from "../i18n";
+import { KnowledgeBasePage, KnowledgeBasesPage } from "../pages/KnowledgeBasesPage";
 import { LoginPage } from "../pages/LoginPage";
+import { KnowledgeBaseAdminPage } from "../pages/admin/KnowledgeBaseAdminPage";
 import { UsersPage } from "../pages/admin/UsersPage";
 
-function HomePage() {
-  const { t } = useTranslation();
-  const { user } = useAuth();
-  return (
-    <main>
-      <p>{t("home.signedInAs", { username: user?.username })}</p>
-    </main>
-  );
+/** An admin page: the login page without a session, the own KB list for a user (REQ-010, REQ-012). */
+function adminOnly(user: User | null, page: ReactNode) {
+  if (!user) return <Navigate to="/login" replace />;
+  return user.role === "admin" ? page : <Navigate to="/" replace />;
 }
 
 function Layout() {
@@ -28,7 +26,13 @@ function Layout() {
         <LanguageSelector />
         {user && (
           <nav>
-            {user.role === "admin" && <Link to="/admin/users">{t("users.menu")}</Link>}
+            <Link to="/">{t("nav.home")}</Link>
+            {user.role === "admin" && (
+              <>
+                <Link to="/admin/users">{t("users.menu")}</Link>
+                <Link to="/admin/kbs">{t("kbAdmin.menu")}</Link>
+              </>
+            )}
             <span>{user.username}</span>
             <button type="button" onClick={() => void logout()}>
               {t("nav.logout")}
@@ -39,19 +43,10 @@ function Layout() {
       {!loading && (
         <Routes>
           <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
-          <Route
-            path="/admin/users"
-            element={
-              !user ? (
-                <Navigate to="/login" replace />
-              ) : user.role === "admin" ? (
-                <UsersPage />
-              ) : (
-                <Navigate to="/" replace />
-              )
-            }
-          />
-          <Route path="*" element={user ? <HomePage /> : <Navigate to="/login" replace />} />
+          <Route path="/admin/users" element={adminOnly(user, <UsersPage />)} />
+          <Route path="/admin/kbs" element={adminOnly(user, <KnowledgeBaseAdminPage />)} />
+          <Route path="/kbs/:kbId" element={user ? <KnowledgeBasePage /> : <Navigate to="/login" replace />} />
+          <Route path="*" element={user ? <KnowledgeBasesPage /> : <Navigate to="/login" replace />} />
         </Routes>
       )}
     </>
