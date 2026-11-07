@@ -4,9 +4,12 @@
 - Linked specs: SPEC-2026-11-06-fase-1-fondazioni
 
 ## Current behaviour
-The platform runs as a Docker Compose stack of four services: `nginx` (the only one with a host port, `HTTP_PORT`,
-default 80), `backend` (FastAPI on port 8000, inside the Compose network only), `redis` and `db` (ParadeDB, PostgreSQL 17
-with the `vector` and `pg_search` extensions). Nginx serves the compiled React frontend and proxies `/api/` to the
+The platform runs as a Docker Compose stack of five services: `nginx` (the only one with a host port, `HTTP_PORT`,
+default 80), `backend` (FastAPI on port 8000, inside the Compose network only), `worker` (phase 2, T-04: the image of
+the backend running `python -m app.worker`, with no port), `redis` and `db` (ParadeDB, PostgreSQL 17 with the `vector`
+and `pg_search` extensions). `backend` and `worker` read the same environment (one YAML anchor in `compose.yaml`) and
+mount the same `uploads` volume at `/data/uploads`; the worker starts after the backend is healthy (the backend applies
+the migrations). Nginx serves the compiled React frontend and proxies `/api/` to the
 backend (the proxy lines live in `nginx/api-proxy.conf`, included by both server templates), always overwriting
 `X-Forwarded-Proto` with its own scheme. The request body limit is 1 MB, except for the document upload
 `/api/kbs/{id}/documents`, where it is `MAX_UPLOAD_SIZE_MB` + 1 MB and a request above it gets 413 with the JSON error
@@ -16,6 +19,17 @@ both `cert.pem` and `key.pem`: then HTTP answers 301 to `https://`. Any other co
 entrypoint logs why (missing file, or `HTTPS_PORT not set`). At startup the backend (`python -m app.run`) applies the
 Alembic migrations, creates the first admin from `ADMIN_USERNAME`/`ADMIN_PASSWORD` when no active admin exists, then
 starts uvicorn. Ollama and Docling are external: `GET /api/health` reports them but they never block the startup.
+
+The worker (`app/worker.py`) runs the jobs of the RQ queue `ingestion` one at a time with `rq.SimpleWorker` (no fork per
+job). While it runs, a daemon thread writes the Redis key `ingestion:worker:alive:{hostname}` (value `1`, expiry 30
+seconds) every 10 seconds; `python -m app.worker --healthcheck`, the Compose health check, exits 0 if the key of its own
+host exists and 1 otherwise. A job (`process_document_job`) takes a document from QUEUED to PROCESSING in one statement
+(no QUEUED row: it ends quietly), reads a TXT or MD as UTF-8, normalizes and chunks it, asks Ollama for the vectors in
+groups of `EMBEDDING_BATCH_SIZE` (16) texts (timeout `EMBEDDING_TIMEOUT_SECONDS`, 120), saves all the chunks in one
+transaction, checks both indexes, then marks the document READY with its `chunk_count` and deletes the original. Any
+failure makes the document FAILED with a reason and no chunk, and keeps the original. Interim until phase 2 T-05: PDF,
+DOCX, PPTX and XLSX end FAILED `unexpected_error` ("Docling parsing is not available yet"), a text with nothing to read
+FAILED `parse_failed`, and a failed step is not repeated. The detail of the pipeline is in the phase 2 spec and plan.
 
 Users are local accounts with role `admin` or `user`. Login matches the username exactly and creates a server-side
 session in Redis (`session:<token>`, idle TTL `SESSION_IDLE_TIMEOUT_MINUTES`, renewed by every request) with an
@@ -41,7 +55,7 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 
 | Method and path | Who | Success | Errors |
 |---|---|---|---|
-| `GET /api/health` | anyone | 200 `{"status": "ok"\|"degraded", "checks": {...}}` | 503 (same body) when database or Redis is `unreachable` |
+| `GET /api/health` | anyone | 200 `{"status": "ok"\|"degraded", "checks": {"database", "redis", "ollama", "docling", "worker"}}`, each `ok` or `unreachable`; `worker` is `ok` when at least one `ingestion:worker:alive:*` key exists in Redis | 503 (same body) when database or Redis is `unreachable` |
 | `POST /api/auth/login` `{"username", "password"}` | anyone | 200 `UserOut` + cookie | 401 `invalid_credentials` (wrong password, unknown or deactivated user) |
 | `POST /api/auth/logout` | session | 204 | 401 `not_authenticated` |
 | `GET /api/auth/me`, `PATCH /api/auth/me` `{"language": "it"\|"en"}` | session | 200 `UserOut` | 401, 422 |
@@ -78,7 +92,8 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   `DATABASE_URL`), `HTTP_PORT`, `HTTPS_PORT` (with `compose.tls.yaml`), `DATABASE_URL`, `REDIS_URL` (set by
   `compose.yaml`), `OLLAMA_BASE_URL`, `DOCLING_BASE_URL`, `HEALTH_CHECK_TIMEOUT_SECONDS` (2), `ADMIN_USERNAME`,
   `ADMIN_PASSWORD`, `SESSION_IDLE_TIMEOUT_MINUTES` (480), and from phase 2 `UPLOAD_DIR` (fixed to the `uploads` volume,
-  `/data/uploads`, by `compose.yaml`) and `MAX_UPLOAD_SIZE_MB` (20, in MiB; passed to the backend and to Nginx).
+  `/data/uploads`, by `compose.yaml`) and `MAX_UPLOAD_SIZE_MB` (20, in MiB; passed to the backend and to Nginx),
+  `EMBEDDING_BATCH_SIZE` (16, at least 1) and `EMBEDDING_TIMEOUT_SECONDS` (120, above 0) for the worker.
 
 ## Diagrams
 
@@ -308,6 +323,8 @@ erDiagram
 - Stack: [compose.yaml](../../compose.yaml), [compose.tls.yaml](../../compose.tls.yaml),
   [nginx/entrypoint-tls.sh](../../nginx/entrypoint-tls.sh), [backend/app/run.py](../../backend/app/run.py),
   [backend/app/api/health.py](../../backend/app/api/health.py).
+- Worker (phase 2, T-04): [worker.py](../../backend/app/worker.py), [jobs.py](../../backend/app/ingestion/jobs.py),
+  [pipeline.py](../../backend/app/ingestion/pipeline.py), [embeddings.py](../../backend/app/ingestion/embeddings.py).
 - Access: [backend/app/auth/deps.py](../../backend/app/auth/deps.py),
   [backend/app/auth/routes.py](../../backend/app/auth/routes.py),
   [backend/app/auth/sessions.py](../../backend/app/auth/sessions.py),
@@ -321,4 +338,4 @@ erDiagram
   [KnowledgeBaseAdminPage.tsx](../../frontend/src/pages/admin/KnowledgeBaseAdminPage.tsx),
   [UsersPage.tsx](../../frontend/src/pages/admin/UsersPage.tsx).
 - Tests: `backend/tests/` (`test_isolation.py`, `test_knowledge_bases.py`, `test_users.py`, `test_auth.py`, ...),
-  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`), `frontend/src/**/*.test.tsx`.
+  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`), `frontend/src/**/*.test.tsx`.
