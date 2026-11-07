@@ -44,10 +44,11 @@ _FURNITURE_LABELS = ("page_header", "page_footer")
 
 
 class DoclingClient:
-    def __init__(self, base_url: str, api_key: str | None, timeout: float) -> None:
+    def __init__(self, base_url: str, api_key: str | None, timeout: float, include_images: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.include_images = include_images
 
     async def convert(self, path: Path, filename: str, fmt: DocumentFormat) -> list[Block]:
         """Send the file to Docling and return its blocks in reading order."""
