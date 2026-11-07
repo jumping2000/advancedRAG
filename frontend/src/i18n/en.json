@@ -6,7 +6,8 @@
     "submit": "Sign in"
   },
   "nav": {
-    "logout": "Sign out"
+    "logout": "Sign out",
+    "home": "Home"
   },
   "home": {
     "signedInAs": "You are signed in as {{username}}."
@@ -49,6 +50,47 @@
       "invalid_username": "The username must have 3 to 64 characters among letters, digits, dot, underscore and hyphen.",
       "cannot_deactivate_self": "You cannot deactivate your own user.",
       "user_not_found": "User not found."
+    }
+  },
+  "kbs": {
+    "title": "Your knowledge bases",
+    "empty": "No knowledge base is assigned to you.",
+    "back": "Back to the list",
+    "errors": {
+      "kb_not_found": "Knowledge base not found."
+    }
+  },
+  "kbAdmin": {
+    "menu": "Knowledge Base",
+    "title": "Knowledge Base",
+    "newKb": "New knowledge base",
+    "name": "Name",
+    "description": "Description",
+    "create": "Create knowledge base",
+    "actions": "Actions",
+    "rename": "Rename",
+    "renameTitle": "Rename {{name}}",
+    "newName": "New name",
+    "newDescription": "New description",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "confirmDelete": "Delete the knowledge base {{name}}? The assignments of its users will be removed too.",
+    "members": "Assigned users",
+    "membersTitle": "Users assigned to {{name}}",
+    "noMembers": "No user is assigned.",
+    "userToAssign": "User to assign",
+    "chooseUser": "Choose a user",
+    "assign": "Assign",
+    "remove": "Remove",
+    "created": "Knowledge base {{name}} created.",
+    "renamed": "Knowledge base {{name}} updated.",
+    "deleted": "Knowledge base {{name}} deleted.",
+    "errors": {
+      "kb_name_taken": "A knowledge base with this name already exists.",
+      "kb_not_found": "Knowledge base not found.",
+      "user_not_found": "User not found.",
+      "validation_error": "The name must have 1 to 100 characters and the description at most 500."
     }
   },
   "errors": {

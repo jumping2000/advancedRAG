@@ -6,7 +6,8 @@
     "submit": "Accedi"
   },
   "nav": {
-    "logout": "Esci"
+    "logout": "Esci",
+    "home": "Home"
   },
   "home": {
     "signedInAs": "Hai effettuato l'accesso come {{username}}."
@@ -49,6 +50,47 @@
       "invalid_username": "Il nome utente deve avere da 3 a 64 caratteri tra lettere, cifre, punto, trattino basso e trattino.",
       "cannot_deactivate_self": "Non puoi disattivare il tuo utente.",
       "user_not_found": "Utente non trovato."
+    }
+  },
+  "kbs": {
+    "title": "Le tue knowledge base",
+    "empty": "Nessuna knowledge base ti è assegnata.",
+    "back": "Torna all'elenco",
+    "errors": {
+      "kb_not_found": "Knowledge base non trovata."
+    }
+  },
+  "kbAdmin": {
+    "menu": "Knowledge Base",
+    "title": "Knowledge Base",
+    "newKb": "Nuova knowledge base",
+    "name": "Nome",
+    "description": "Descrizione",
+    "create": "Crea knowledge base",
+    "actions": "Azioni",
+    "rename": "Rinomina",
+    "renameTitle": "Rinomina {{name}}",
+    "newName": "Nuovo nome",
+    "newDescription": "Nuova descrizione",
+    "save": "Salva",
+    "cancel": "Annulla",
+    "delete": "Elimina",
+    "confirmDelete": "Eliminare la knowledge base {{name}}? Anche le assegnazioni dei suoi utenti verranno rimosse.",
+    "members": "Utenti assegnati",
+    "membersTitle": "Utenti assegnati a {{name}}",
+    "noMembers": "Nessun utente assegnato.",
+    "userToAssign": "Utente da assegnare",
+    "chooseUser": "Scegli un utente",
+    "assign": "Assegna",
+    "remove": "Togli",
+    "created": "Knowledge base {{name}} creata.",
+    "renamed": "Knowledge base {{name}} aggiornata.",
+    "deleted": "Knowledge base {{name}} eliminata.",
+    "errors": {
+      "kb_name_taken": "Esiste già una knowledge base con questo nome.",
+      "kb_not_found": "Knowledge base non trovata.",
+      "user_not_found": "Utente non trovato.",
+      "validation_error": "Il nome deve avere da 1 a 100 caratteri e la descrizione al massimo 500."
     }
   },
   "errors": {
