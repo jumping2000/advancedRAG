@@ -577,15 +577,98 @@ def test_AC_017_references_that_loop_are_read_once_and_end() -> None:
     assert docling_json_to_blocks(doc) == paragraphs("voce")
 
 
-def test_AC_017_a_very_deep_document_does_not_crash_the_reader() -> None:
-    depth = 5000
-    groups = [{"label": "list", "children": [{"$ref": f"#/groups/{n + 1}"}]} for n in range(depth)]
+def chain_document(levels: int) -> dict[str, Any]:
+    """`levels` lists nested one in the next, the last one holding a text: the group at level k is read at depth k and
+    the text at depth `levels`."""
+    groups = [{"label": "list", "children": [{"$ref": f"#/groups/{n + 1}"}]} for n in range(levels - 1)]
     groups.append({"label": "list", "children": [{"$ref": "#/texts/0"}]})
-    doc = {"body": {"children": [{"$ref": "#/groups/0"}]}, "groups": groups, "texts": [{"label": "text", "text": "x"}]}
+    return {"body": {"children": [{"$ref": "#/groups/0"}]}, "groups": groups, "texts": [{"label": "text", "text": "x"}]}
 
-    blocks = docling_json_to_blocks(doc)
 
-    assert len(blocks) <= 1  # the reader may stop descending, but it ends and does not raise
+@pytest.mark.parametrize(("levels", "expected"), [(1, ["x"]), (200, ["x"]), (201, []), (5000, [])])
+def test_AC_017_the_reader_stops_descending_below_200_levels_and_never_raises(levels: int, expected: list[str]) -> None:
+    """A node deeper than 200 levels is not read (a real document is nowhere near that deep): the text at depth 200 is
+    read, the one at depth 201 and the ones of a 5000-level chain are left out, and there is no error."""
+    blocks = docling_json_to_blocks(chain_document(levels))
+
+    assert [block.text for block in blocks] == expected
+
+
+# docling_json_to_blocks: tables without `grid` ------------------------------------------------------------------------
+
+
+def cell(text: str, row: int, column: int) -> dict[str, Any]:
+    return {
+        "text": text,
+        "start_row_offset_idx": row,
+        "end_row_offset_idx": row + 1,
+        "start_col_offset_idx": column,
+        "end_col_offset_idx": column + 1,
+    }
+
+
+def table_from_cells(cells: list[dict[str, Any]]) -> dict[str, Any]:
+    node = table_node(0, [["x"]], [4])
+    node["data"] = {"num_rows": 3, "num_cols": 2, "table_cells": cells}  # no `grid`
+    return node
+
+
+def test_AC_017_a_table_without_grid_is_rebuilt_from_its_cells_row_by_row_in_column_order() -> None:
+    cells = [  # not in reading order: the offsets decide
+        cell("1,20", 1, 1),
+        cell("Prezzo", 0, 1),
+        cell("Tè", 2, 0),
+        cell("Voce", 0, 0),
+        cell("0,90", 2, 1),
+        cell("Caffè", 1, 0),
+    ]
+
+    blocks = docling_json_to_blocks(document(["#/tables/0"], tables=[table_from_cells(cells)]))
+
+    assert blocks == [
+        Block("table_row", "Voce | Prezzo", page=4),
+        Block("table_row", "Caffè | 1,20", page=4),
+        Block("table_row", "Tè | 0,90", page=4),
+    ]
+
+
+def test_AC_017_a_table_cells_row_with_no_text_is_left_out_and_a_cell_without_offsets_is_ignored() -> None:
+    cells = [cell("A", 0, 0), cell("", 1, 0), cell("", 1, 1), cell("B", 2, 1), {"text": "senza posizione"}]
+    cells += [{"text": "offset sbagliato", "start_row_offset_idx": "0", "start_col_offset_idx": 0}, "not a cell"]
+
+    blocks = docling_json_to_blocks(document(["#/tables/0"], tables=[table_from_cells(cells)]))
+
+    assert blocks == [Block("table_row", "A", page=4), Block("table_row", "B", page=4)]
+
+
+def test_AC_017_the_grid_wins_over_the_cells_when_both_are_there() -> None:
+    node = table_node(0, [["dalla", "griglia"]], [1])
+    node["data"]["table_cells"] = [cell("dalle", 0, 0), cell("celle", 0, 1)]
+
+    blocks = docling_json_to_blocks(document(["#/tables/0"], tables=[node]))
+
+    assert blocks == [Block("table_row", "dalla | griglia", page=1)]
+
+
+# docling_json_to_blocks: references that are not plain --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "#/texts/" + "9" * 5000,
+        "#/texts/١",
+        "#/texts/²",
+        "#/texts/" + "0" * 7,
+        "#/texts/-1",
+        "#/texts/1.5",
+        "#/texts/ 0",
+    ],
+)
+def test_AC_017_a_reference_with_a_huge_or_non_ascii_number_is_ignored_and_never_raises(target: str) -> None:
+    doc = {"body": {"children": [{"$ref": target}, {"$ref": "#/texts/0"}]}, "texts": [{"label": "text", "text": "x"}]}
+
+    assert docling_json_to_blocks(doc) == paragraphs("x")
 
 
 # DoclingClient: the request ------------------------------------------------------------------------------------------
@@ -600,8 +683,10 @@ def write_original(folder: Path, content: bytes) -> Path:
     return path
 
 
-def client_for(url: str, api_key: str | None = None, timeout: float = 5.0) -> DoclingClient:
-    return DoclingClient(url, api_key, timeout)
+def client_for(
+    url: str, api_key: str | None = None, timeout: float = 5.0, include_images: bool = False
+) -> DoclingClient:
+    return DoclingClient(url, api_key, timeout, include_images=include_images)
 
 
 @pytest.mark.parametrize("fmt", FORMATS)
@@ -617,11 +702,30 @@ async def test_AC_017_the_client_posts_the_file_to_convert_file_with_the_form_fi
     assert request.content == content
     assert request.filename == f"upload.{fmt}"
     assert request.api_key == "docling-key-123"
-    assert request.fields == {"from_formats": fmt, "to_formats": "json", "do_ocr": "false"}
+    assert request.fields == {"from_formats": fmt, "to_formats": "json", "do_ocr": "false", "include_images": "false"}
     assert blocks == [
         Block("heading", "Titolo del documento", level=1, page=1),
         *[Block("paragraph", ITEMS[1][1], page=1)],
     ]
+
+
+@pytest.mark.parametrize(("include", "sent"), [(False, "false"), (True, "true")])
+async def test_AC_017_the_form_field_include_images_follows_the_setting(
+    tmp_path: Path, include: bool, sent: str
+) -> None:
+    path = write_original(tmp_path, fake_document_file(ITEMS))
+    with fake_docling() as docling:
+        await client_for(docling.url, include_images=include).convert(path, "upload.pdf", "pdf")
+
+    assert [request.fields["include_images"] for request in docling.requests] == [sent]
+
+
+async def test_AC_017_the_images_are_not_requested_unless_the_client_is_told_to(tmp_path: Path) -> None:
+    path = write_original(tmp_path, fake_document_file(ITEMS))
+    with fake_docling() as docling:
+        await DoclingClient(docling.url, None, 5.0).convert(path, "upload.pdf", "pdf")
+
+    assert docling.requests[0].fields["include_images"] == "false"
 
 
 @pytest.mark.parametrize("api_key", [None, ""])
@@ -697,7 +801,7 @@ async def test_AC_031_a_5xx_or_429_answer_is_a_temporary_docling_error(tmp_path:
 # DoclingClient: permanent errors (no use repeating) ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 415, 422])
+@pytest.mark.parametrize("status", [400, 404, 413, 415, 422])
 async def test_AC_033_any_other_4xx_answer_is_a_permanent_parse_failed(tmp_path: Path, status: int) -> None:
     with fake_docling(fail_status=status) as docling:
         error = await convert_error(write_original(tmp_path, fake_document_file(ITEMS)), docling.url)
@@ -705,6 +809,21 @@ async def test_AC_033_any_other_4xx_answer_is_a_permanent_parse_failed(tmp_path:
     assert isinstance(error, PermanentError)
     assert error.code == "parse_failed"
     assert error.message == "The document could not be parsed"
+    assert len(docling.requests) == 1
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_AC_033_a_refused_key_is_a_permanent_docling_error_that_names_the_setting(
+    tmp_path: Path, status: int
+) -> None:
+    """Wrong or missing DOCLING_API_KEY (owner's decision): not a problem of the file, so not `parse_failed`; never
+    repeated, whatever the number of attempts."""
+    with fake_docling(fail_status=status) as docling:
+        error = await convert_error(write_original(tmp_path, fake_document_file(ITEMS)), docling.url)
+
+    assert isinstance(error, PermanentError)
+    assert error.code == "docling_error"
+    assert error.message == "The document parsing service refused the request: check DOCLING_API_KEY"
     assert len(docling.requests) == 1
 
 
