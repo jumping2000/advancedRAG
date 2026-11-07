@@ -1,19 +1,15 @@
 # advancedRAG stack: docker compose up --build (values from .env, see .env.example)
 name: advancedrag
-# Shared by the backend and the worker: they are the same image and read the same settings
-x-backend-environment: &backend-environment
+# What the backend and the worker both read. The worker gets nothing else (least privilege): the admin account, the
+# sessions, the upload limit and the health timeout are the backend's.
+x-common-environment: &common-environment
   DATABASE_URL: postgresql+asyncpg://rag@db:5432/ragdb
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
   REDIS_URL: redis://redis:6379/0
   OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?set OLLAMA_BASE_URL in .env}
   DOCLING_BASE_URL: ${DOCLING_BASE_URL:?set DOCLING_BASE_URL in .env}
-  HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-2}
-  ADMIN_USERNAME: ${ADMIN_USERNAME:-}
-  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-  SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-480}
   # Fixed here: the folder is the `uploads` volume, so .env cannot point it elsewhere
   UPLOAD_DIR: /data/uploads
-  MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
   EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
   EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-16}
@@ -48,7 +44,15 @@ services:
 
   backend:
     build: ./backend
-    environment: *backend-environment
+    # The worker runs this same image: it is built once, here
+    image: advancedrag-backend
+    environment:
+      <<: *common-environment
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-2}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-480}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -65,9 +69,11 @@ services:
   # The ingestion worker: the image of the backend, the RQ queue `ingestion`, one job at a time. It shares the `uploads`
   # volume with the backend and publishes no port; it waits for the backend, which applies the migrations.
   worker:
-    build: ./backend
+    image: advancedrag-backend
+    # Built by the `backend` service, which the worker waits for: never pulled
+    pull_policy: never
     command: ["python", "-m", "app.worker"]
-    environment: *backend-environment
+    environment: *common-environment
     volumes:
       - uploads:/data/uploads
     depends_on:
