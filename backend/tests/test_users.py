@@ -671,3 +671,97 @@ async def test_AC_010_session_cookie_has_no_max_age_or_expires(engine: AsyncEngi
     attributes = {part.strip().partition("=")[0].lower() for part in headers[0].split(";")[1:]}
     assert "max-age" not in attributes
     assert "expires" not in attributes
+
+
+# Owner's decision: an id that is not a UUID gets the same 404 as an unknown id (like the KB rule) ----------------
+
+
+@pytest.mark.parametrize("bad_id", ["not-a-uuid", "123", "8a1c7f9e-0000-4000-8000-00000000000z"])
+async def test_AC_017_a_non_uuid_id_gets_the_same_404_as_an_unknown_id(
+    engine: AsyncEngine, admin: httpx.AsyncClient, bad_id: str
+) -> None:
+    unknown = await admin.patch(f"{USERS}/{uuid.uuid4()}", json={"is_active": False})
+    malformed = await admin.patch(f"{USERS}/{bad_id}", json={"is_active": False})
+
+    assert unknown.status_code == 404
+    assert malformed.status_code == 404
+    assert malformed.json() == unknown.json()
+    assert error_code(malformed) == "user_not_found"
+
+
+@pytest.mark.parametrize("bad_id", ["not-a-uuid", "123"])
+async def test_AC_018_reset_with_a_non_uuid_id_gets_the_same_404_as_an_unknown_id(
+    engine: AsyncEngine, admin: httpx.AsyncClient, bad_id: str
+) -> None:
+    unknown = await admin.put(f"{USERS}/{uuid.uuid4()}/password", json={"password": NEW_PASSWORD})
+    malformed = await admin.put(f"{USERS}/{bad_id}/password", json={"password": NEW_PASSWORD})
+
+    assert unknown.status_code == 404
+    assert malformed.status_code == 404
+    assert malformed.json() == unknown.json()
+    assert error_code(malformed) == "user_not_found"
+
+
+async def test_AC_025_a_user_gets_403_also_with_a_non_uuid_id(
+    engine: AsyncEngine, mario: tuple[uuid.UUID, httpx.AsyncClient]
+) -> None:
+    _, mario_api = mario
+
+    response = await mario_api.patch(f"{USERS}/not-a-uuid", json={"is_active": False})
+
+    assert response.status_code == 403
+    assert error_code(response) == "forbidden"
+
+
+# Review (low): mass assignment -------------------------------------------------------------------------------------
+
+
+async def test_AC_017_patch_changes_only_is_active_whatever_else_it_sends(
+    engine: AsyncEngine, admin: httpx.AsyncClient, mario: tuple[uuid.UUID, httpx.AsyncClient]
+) -> None:
+    user_id, mario_api = mario
+    before = await row_of(engine, "mario")
+
+    response = await admin.patch(
+        f"{USERS}/{user_id}",
+        json={
+            "is_active": True,
+            "role": "admin",
+            "session_epoch": 99,
+            "password_hash": "x",
+            "username": "luigi",
+            "language": "it",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["role"], body["username"], body["language"], body["is_active"]) == ("user", "mario", None, True)
+    after = await row_of(engine, "mario")
+    assert after == before
+    assert (await mario_api.get("/api/auth/me")).status_code == 200
+
+
+async def test_AC_015_creation_ignores_is_active_session_epoch_and_password_hash_in_the_body(
+    engine: AsyncEngine, admin: httpx.AsyncClient
+) -> None:
+    response = await admin.post(
+        USERS,
+        json={
+            "username": "mario",
+            "password": PASSWORD,
+            "role": "user",
+            "is_active": False,
+            "session_epoch": 99,
+            "password_hash": "$argon2id$forged",
+            "id": str(uuid.uuid4()),
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["is_active"] is True
+    row = await row_of(engine, "mario")
+    assert (row["is_active"], row["session_epoch"], row["role"]) == (True, 0, "user")
+    assert row["password_hash"] != "$argon2id$forged"
+    assert verify_password(PASSWORD, row["password_hash"])
+    assert str(row["id"]) == response.json()["id"]
