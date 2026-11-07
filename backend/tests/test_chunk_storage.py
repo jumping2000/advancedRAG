@@ -14,23 +14,27 @@ from __future__ import annotations
 
 import asyncio
 import math
+import random
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, StatementError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.models import Chunk, IndexingProfile
 from app.db.vector import Vector
 from app.ingestion.chunker import ChunkDraft
 from app.ingestion.persist import DocumentGone, persist_chunks, verify_indexes
 from app.ingestion.profile import ensure_profile
-from app.run import migrate
-from tests.conftest import make_settings
+from app.run import BACKEND_DIR, migrate
+from tests.conftest import TEST_DATABASE_URL, make_settings
 
 DIMENSIONS = 4
 
@@ -261,8 +265,8 @@ async def test_AC_027_profile_rows_refuse_dimensions_outside_1_to_2000(engine: A
         ({"embedding": None}, "embedding"),
         ({"content": None}, "content"),
         ({"profile_id": uuid.uuid4()}, "chunks_profile_fkey"),
-        ({"document_id": uuid.uuid4()}, "chunks_document_id_fkey"),
-        ({"kb_id": uuid.uuid4()}, "chunks_kb_id_fkey"),
+        ({"document_id": uuid.uuid4()}, "chunks_document_kb_fkey"),
+        ({"kb_id": uuid.uuid4()}, "chunks_document_kb_fkey"),
     ],
 )
 async def test_the_database_refuses_chunks_that_break_the_table_constraints(
@@ -691,3 +695,306 @@ async def test_AC_030_verify_indexes_is_false_when_the_vector_search_finds_fewer
     )
 
     assert await verify(engine, stored.document_id, other_profile, 3) is False
+
+
+# A chunk belongs to the KB of its document, enforced by the database ------------------------------------------------
+
+
+async def test_a_chunk_whose_kb_differs_from_the_kb_of_its_document_is_refused(engine: AsyncEngine) -> None:
+    profile_id = await add_profile(engine)
+    kb_id, other_kb = await add_kb(engine, "kb"), await add_kb(engine, "other")
+    document_id = await add_document(engine, kb_id)
+
+    with pytest.raises(IntegrityError, match="chunks_document_kb_fkey"):
+        await insert_chunk(engine, other_kb, document_id, profile_id)  # an existing KB, but not the document's
+
+    assert await chunk_count(engine) == 0
+    await insert_chunk(engine, kb_id, document_id, profile_id)  # control: the document's own KB
+    assert await chunk_count(engine) == 1
+
+
+async def test_the_kb_of_a_chunk_cannot_be_changed_away_from_its_document(engine: AsyncEngine) -> None:
+    profile_id = await add_profile(engine)
+    kb_id, other_kb = await add_kb(engine, "kb"), await add_kb(engine, "other")
+    document_id = await add_document(engine, kb_id)
+    await insert_chunk(engine, kb_id, document_id, profile_id)
+
+    with pytest.raises(IntegrityError, match="chunks_document_kb_fkey"):
+        async with engine.begin() as connection:
+            await connection.execute(text("update chunks set kb_id = :kb"), {"kb": other_kb})
+
+    assert await scalar(engine, "select kb_id from chunks") == kb_id
+
+
+async def test_the_kb_and_document_keys_of_chunks_are_indexed(engine: AsyncEngine) -> None:
+    async with engine.connect() as connection:
+        indexes = {
+            row.indexname: row.indexdef
+            for row in await connection.execute(
+                text("select indexname, indexdef from pg_indexes where tablename in ('chunks', 'documents')")
+            )
+        }
+        constraints = (
+            await connection.scalars(text("select conname from pg_constraint where conrelid = 'documents'::regclass"))
+        ).all()
+
+    assert "(kb_id)" in indexes["chunks_kb_id_idx"]
+    assert "documents_id_kb_id_key" in constraints
+
+
+# AC-030 (index half), part 2: the vector check does not depend on the plan ------------------------------------------
+
+BIG = 1024
+
+
+def random_vector(rng: random.Random, dimensions: int = BIG) -> list[float]:
+    return [rng.uniform(-1.0, 1.0) for _ in range(dimensions)]
+
+
+async def add_big_document(
+    engine: AsyncEngine, profile: IndexingProfile, kb_id: uuid.UUID, count: int, seed: int
+) -> uuid.UUID:
+    document_id = await add_document(engine, kb_id)
+    rng = random.Random(seed)
+    await persist(
+        engine,
+        Stored(kb_id, document_id, profile),
+        drafts(count, prefix=f"d{seed}x"),
+        [random_vector(rng) for _ in range(count)],
+    )
+    return document_id
+
+
+@pytest.fixture
+async def big_profile(engine: AsyncEngine) -> IndexingProfile:
+    return await ensure_profile(engine, make_settings(embedding_model="big-model", embedding_dimensions=BIG))
+
+
+async def test_AC_030_verify_indexes_is_true_for_a_document_with_many_chunks_among_others(
+    engine: AsyncEngine, big_profile: IndexingProfile
+) -> None:
+    """More chunks than the default `hnsw.ef_search` (40), other documents of the same profile, statistics present."""
+    kb_id = await add_kb(engine, "kb")
+    await add_big_document(engine, big_profile, kb_id, 120, seed=1)
+    target = await add_big_document(engine, big_profile, kb_id, 300, seed=2)
+    await add_big_document(engine, big_profile, kb_id, 120, seed=3)
+    async with engine.connect() as connection:
+        connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await connection.execute(text("analyze chunks"))
+
+    assert await verify(engine, target, big_profile, 300) is True
+
+
+async def test_AC_030_verify_indexes_is_true_right_after_the_commit_without_statistics(
+    engine: AsyncEngine, big_profile: IndexingProfile
+) -> None:
+    kb_id = await add_kb(engine, "kb")
+    await add_big_document(engine, big_profile, kb_id, 60, seed=4)
+    target = await add_big_document(engine, big_profile, kb_id, 100, seed=5)
+
+    assert await verify(engine, target, big_profile, 100) is True
+
+
+async def test_AC_030_verify_indexes_is_true_when_the_planner_can_only_use_the_hnsw_index(
+    engine: AsyncEngine, big_profile: IndexingProfile
+) -> None:
+    """pgvector filters by document after the HNSW scan, which returns `hnsw.ef_search` (40) rows by default: with the
+    other access paths unavailable the check still has to find all the chunks of the document."""
+    kb_id = await add_kb(engine, "kb")
+    await add_big_document(engine, big_profile, kb_id, 100, seed=6)
+    target = await add_big_document(engine, big_profile, kb_id, 300, seed=7)
+    await add_big_document(engine, big_profile, kb_id, 100, seed=8)
+    hnsw = f"chunks_embedding_hnsw_{big_profile.id.hex[:12]}"
+    scans = text("select coalesce(sum(idx_scan), 0) from pg_stat_user_indexes where indexrelname = :name")
+    before = await scalar(engine, str(scans), name=hnsw)
+
+    async with sessions(engine)() as session:
+        # Transactional DDL and settings: undone by the rollback, other tests and connections never see them.
+        await session.execute(text("alter table chunks drop constraint chunks_document_position_key"))
+        await session.execute(text("set local enable_seqscan = off"))
+        await session.execute(text("set local enable_bitmapscan = off"))
+
+        result = await verify_indexes(session, target, big_profile, 300)
+
+        await session.execute(text("select pg_stat_force_next_flush()"))  # publish this session's index scans
+        await session.rollback()
+    after = await scalar(engine, str(scans), name=hnsw)
+    assert after > before, "the check did not go through the HNSW index"
+    assert result is True
+
+
+async def test_AC_030_the_settings_of_the_check_do_not_leak_into_the_session(
+    engine: AsyncEngine, big_profile: IndexingProfile
+) -> None:
+    kb_id = await add_kb(engine, "kb")
+    target = await add_big_document(engine, big_profile, kb_id, 50, seed=9)
+
+    async with sessions(engine)() as session:
+        before = await session.scalar(text("select current_setting('hnsw.iterative_scan')"))
+        assert await verify_indexes(session, target, big_profile, 50) is True
+        after = await session.scalar(text("select current_setting('hnsw.iterative_scan')"))
+        await session.rollback()
+    assert after == before
+
+
+# AC-038 and AC-039 (storage side): deleting a KB while its document is being saved ----------------------------------
+
+
+async def wait_until_blocked(engine: AsyncEngine, statement: str, seconds: float = 10.0) -> None:
+    """Wait until a statement whose text contains `statement` waits for a lock (a condition, not a fixed delay)."""
+    sql = text(
+        "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'"
+        " and query ilike :pattern"
+    )
+    async with asyncio.timeout(seconds):
+        while True:
+            async with engine.connect() as connection:
+                if await connection.scalar(sql, {"pattern": f"%{statement}%"}):
+                    return
+            await asyncio.sleep(0.05)
+
+
+PAUSE_KEY = 7303
+
+
+@pytest.fixture
+async def paused_inserts(engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """Every insert into chunks waits for the shared advisory lock PAUSE_KEY, which the yielded connection holds
+    exclusively until the test unlocks it: the persist stays in the middle of its inserts, with the document locked."""
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "create function t03_pause_insert() returns trigger language plpgsql as $$ begin"
+                " perform pg_advisory_lock_shared(7303); perform pg_advisory_unlock_shared(7303); return new; end $$"
+            )
+        )
+        await connection.execute(
+            text("create trigger t03_pause before insert on chunks for each row execute function t03_pause_insert()")
+        )
+    holder = await engine.connect()
+    await holder.execute(text("select pg_advisory_lock(:key)"), {"key": PAUSE_KEY})
+    try:
+        yield holder
+    finally:
+        await holder.execute(text("select pg_advisory_unlock_all()"))
+        await holder.close()
+        async with engine.begin() as connection:
+            await connection.execute(text("drop trigger t03_pause on chunks"))
+            await connection.execute(text("drop function t03_pause_insert()"))
+
+
+async def test_AC_038_AC_039_deleting_the_kb_while_the_chunks_are_saved_does_not_deadlock(
+    stored: Stored, engine: AsyncEngine, paused_inserts: AsyncConnection
+) -> None:
+    async def delete_kb() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(text("delete from knowledge_bases where id = :id"), {"id": stored.kb_id})
+
+    saving = asyncio.create_task(persist(engine, stored, drafts(3), vectors(3)))
+    await wait_until_blocked(engine, "insert into chunks")  # the document row is locked, the insert is paused
+    deleting = asyncio.create_task(delete_kb())
+    await wait_until_blocked(engine, "delete from knowledge_bases")  # waits for the document row
+    await paused_inserts.execute(text("select pg_advisory_unlock(:key)"), {"key": PAUSE_KEY})
+
+    saved, deleted = await asyncio.gather(saving, deleting, return_exceptions=True)
+
+    assert deleted is None, f"the deletion failed: {deleted!r}"  # no DeadlockDetected
+    assert saved == 3 or isinstance(saved, DocumentGone), f"the persist failed: {saved!r}"
+    assert await chunk_count(engine) == 0  # saved before the deletion, then taken away with the document
+    assert await scalar(engine, "select count(*) from documents") == 0
+    assert await scalar(engine, "select count(*) from knowledge_bases") == 0
+
+
+async def test_AC_038_AC_039_a_kb_deleted_before_the_save_leaves_no_chunk(stored: Stored, engine: AsyncEngine) -> None:
+    other = engine.connect()
+    async with other as connection:
+        await connection.execute(text("delete from knowledge_bases where id = :id"), {"id": stored.kb_id})
+        task = asyncio.create_task(persist(engine, stored, drafts(3), vectors(3)))
+        try:
+            await wait_until_blocked(engine, "for update")
+        finally:
+            await connection.commit()
+
+        with pytest.raises(DocumentGone):
+            await task
+    assert await chunk_count(engine) == 0
+
+
+# Migration 0004: upgrade, downgrade, upgrade ------------------------------------------------------------------------
+
+
+def alembic_config(database_url: Any) -> Config:
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    config.attributes["database_url"] = database_url
+    return config
+
+
+async def scratch_database(action: str, name: str) -> None:
+    engine = create_async_engine(make_url(TEST_DATABASE_URL), isolation_level="AUTOCOMMIT")
+    async with engine.connect() as connection:
+        if action == "create":
+            await connection.execute(text(f'create database "{name}"'))
+        else:
+            await connection.execute(text(f'drop database if exists "{name}" with (force)'))
+    await engine.dispose()
+
+
+async def schema_state(url: Any) -> dict[str, Any]:
+    engine = create_async_engine(url)
+    async with engine.connect() as connection:
+        tables = (await connection.scalars(text("select tablename from pg_tables where schemaname = 'public'"))).all()
+        indexes = (await connection.scalars(text("select indexname from pg_indexes where schemaname = 'public'"))).all()
+        constraints = (
+            await connection.scalars(
+                text("select conname from pg_constraint where connamespace = 'public'::regnamespace")
+            )
+        ).all()
+        profile_column = await connection.scalar(
+            text(
+                "select count(*) from information_schema.columns"
+                " where table_name = 'documents' and column_name = 'profile_id'"
+            )
+        )
+        version = await connection.scalar(text("select version_num from alembic_version"))
+    await engine.dispose()
+    return {
+        "tables": set(tables),
+        "indexes": set(indexes),
+        "constraints": set(constraints),
+        "profile_column": profile_column,
+        "version": version,
+    }
+
+
+def test_migration_0004_upgrades_downgrades_and_upgrades_again() -> None:
+    name = f"rag_migration_{uuid.uuid4().hex[:8]}"
+    url = make_url(TEST_DATABASE_URL).set(database=name)
+    config = alembic_config(url)
+    asyncio.run(scratch_database("create", name))
+    try:
+        command.upgrade(config, "head")
+        first = asyncio.run(schema_state(url))
+        command.downgrade(config, "0003_documents")
+        down = asyncio.run(schema_state(url))
+        command.upgrade(config, "head")
+        second = asyncio.run(schema_state(url))
+    finally:
+        asyncio.run(scratch_database("drop", name))
+
+    created = {"chunks", "indexing_profiles"}
+    assert created <= first["tables"]
+    assert {"chunks_bm25", "chunks_kb_id_idx", "chunks_pkey"} <= first["indexes"]
+    assert {"documents_id_kb_id_key", "chunks_document_kb_fkey", "chunks_embedding_dimensions_check"} <= first[
+        "constraints"
+    ]
+    assert first["profile_column"] == 1
+
+    assert down["version"] == "0003_documents"
+    assert not created & down["tables"]
+    assert "documents" in down["tables"]
+    assert down["profile_column"] == 0
+    assert not {"chunks_bm25", "chunks_kb_id_idx"} & down["indexes"]
+    assert "documents_id_kb_id_key" not in down["constraints"]
+
+    assert second == first

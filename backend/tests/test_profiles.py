@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app import run
@@ -334,6 +335,7 @@ def test_equal_minimum_target_and_maximum_are_consistent() -> None:
     ("overrides", "named"),
     [
         ({"chunk_min_words": 400}, ["CHUNK_MIN_WORDS", "CHUNK_TARGET_WORDS"]),
+        ({"chunk_min_words": 500}, ["CHUNK_MAX_WORDS"]),
         ({"chunk_max_words": 200}, ["CHUNK_MAX_WORDS", "CHUNK_TARGET_WORDS"]),
         ({"chunk_target_words": 0, "chunk_min_words": 0}, ["CHUNK_TARGET_WORDS"]),
         ({"chunk_min_words": -1}, ["CHUNK_MIN_WORDS"]),
@@ -348,7 +350,7 @@ def test_inconsistent_values_are_refused_naming_the_variables(overrides: dict[st
     with pytest.raises(ValidationError) as refused:
         make_settings(**overrides)
 
-    message = str(refused.value).upper()
+    message = str(refused.value)  # the environment variables, exactly as written in .env
     for name in named:
         assert name in message
 
@@ -363,3 +365,86 @@ def test_the_backend_does_not_start_with_inconsistent_chunk_sizes(
     assert "CHUNK_MIN_WORDS" in message
     assert "CHUNK_TARGET_WORDS" in message
     assert asyncio.run(stored_profiles()) == []
+
+
+# The cause of a failure is not hidden -------------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def refusing_profiles(engine: AsyncEngine) -> AsyncIterator[None]:
+    """A trigger that makes every insert into indexing_profiles fail with a message of its own (a real error)."""
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "create function t03_refuse_profile() returns trigger language plpgsql as"
+                " $$ begin raise exception 'refused-by-the-test-trigger'; end $$"
+            )
+        )
+        await connection.execute(
+            text(
+                "create trigger t03_refuse before insert on indexing_profiles"
+                " for each row execute function t03_refuse_profile()"
+            )
+        )
+    try:
+        yield
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(text("drop trigger t03_refuse on indexing_profiles"))
+            await connection.execute(text("drop function t03_refuse_profile()"))
+
+
+async def test_AC_026_a_database_error_is_chained_and_its_cause_is_in_the_message(
+    engine: AsyncEngine, refusing_profiles: None
+) -> None:
+    with pytest.raises(ProfileSetupError) as refused:
+        await ensure_profile(engine, profile_settings())
+
+    assert isinstance(refused.value.__cause__, SQLAlchemyError)
+    message = str(refused.value)
+    assert "refused-by-the-test-trigger" in message
+    assert "EMBEDDING_DIMENSIONS" in message
+    assert "EMBEDDING_MODEL" in message
+    assert "database" in message
+
+
+def test_AC_026_backend_stops_with_the_cause_of_a_database_error_in_the_profile(
+    empty_database: None, start_backend: Callable[..., None]
+) -> None:
+    async def install() -> None:
+        engine = create_async_engine(TEST_DATABASE_URL)
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "create function t03_refuse_profile() returns trigger language plpgsql as"
+                    " $$ begin raise exception 'refused-by-the-test-trigger'; end $$"
+                )
+            )
+            await connection.execute(
+                text(
+                    "create trigger t03_refuse before insert on indexing_profiles"
+                    " for each row execute function t03_refuse_profile()"
+                )
+            )
+        await engine.dispose()
+
+    async def remove() -> None:
+        engine = create_async_engine(TEST_DATABASE_URL)
+        async with engine.begin() as connection:
+            await connection.execute(text("drop trigger t03_refuse on indexing_profiles"))
+            await connection.execute(text("drop function t03_refuse_profile()"))
+        await engine.dispose()
+
+    asyncio.run(install())
+    try:
+        with pytest.raises(SystemExit) as stopped:
+            start_backend()
+    finally:
+        asyncio.run(remove())
+
+    message = str(stopped.value)
+    assert "refused-by-the-test-trigger" in message
+    assert "EMBEDDING_DIMENSIONS" in message
+    assert "EMBEDDING_MODEL" in message
+    assert isinstance(stopped.value.__cause__, ProfileSetupError)
+    assert isinstance(stopped.value.__cause__.__cause__, SQLAlchemyError)
