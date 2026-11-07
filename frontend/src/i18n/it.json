@@ -41,6 +41,8 @@
     "cancel": "Annulla",
     "created": "Utente {{username}} creato.",
     "passwordReset": "Password di {{username}} reimpostata.",
+    "confirmDeactivate": "Disattivare {{username}}? Tutte le sue sessioni verranno chiuse.",
+    "signInAgain": "La tua password è stata reimpostata: accedi di nuovo con la nuova password.",
     "errors": {
       "username_taken": "Questo nome utente è già usato.",
       "password_too_short": "La password deve avere almeno 12 caratteri.",

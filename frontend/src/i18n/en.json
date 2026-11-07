@@ -41,6 +41,8 @@
     "cancel": "Cancel",
     "created": "User {{username}} created.",
     "passwordReset": "Password of {{username}} reset.",
+    "confirmDeactivate": "Deactivate {{username}}? All their sessions will be closed.",
+    "signInAgain": "Your password has been reset: sign in again with the new password.",
     "errors": {
       "username_taken": "This username is already taken.",
       "password_too_short": "The password must be at least 12 characters long.",
