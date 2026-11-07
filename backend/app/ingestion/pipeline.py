@@ -122,16 +122,25 @@ async def _read_blocks(document: Document, storage: UploadStorage, settings: Set
         except UnicodeDecodeError:
             raise PermanentError("parse_failed", "The file is not valid UTF-8 text") from None
     key = settings.docling_api_key.get_secret_value() if settings.docling_api_key else None
-    client = DoclingClient(settings.docling_base_url, key or None, settings.docling_timeout_seconds)
+    client = DoclingClient(
+        settings.docling_base_url,
+        key or None,
+        settings.docling_timeout_seconds,
+        include_images=settings.docling_include_images,
+    )
     fmt = cast(DocumentFormat, document.format)
     # The name sent to Docling is made of the id and the format: the name of the user's file stays here.
-    return await _with_attempts(
+    blocks = await _with_attempts(
         lambda: client.convert(storage.path(document.id), f"{document.id}.{fmt}", fmt),
         "docling",
         document.id,
         settings,
         sleep,
     )
+    if client.partial_errors is not None:
+        # Only the number: what Docling says about its errors may hold the content of the document.
+        logger.warning("document %s: Docling reported %d errors (partial success)", document.id, client.partial_errors)
+    return blocks
 
 
 async def _with_attempts[T](
