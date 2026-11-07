@@ -11,14 +11,18 @@ SOURCE_DIR=/etc/nginx/server-templates
 TEMPLATE=/etc/nginx/templates/default.conf.template
 
 # Body limit of the document upload route (api-proxy.conf, templates): the file limit plus 1 MB of multipart framing.
+# The backend accepts the same whole numbers (leading zeros too: 020 is 20), so the zeros are removed before the
+# arithmetic, which would otherwise read them as octal. More than 5 digits (99999 MB) is refused as absurd.
 MAX_UPLOAD_SIZE_MB="${MAX_UPLOAD_SIZE_MB:-20}"
+UPLOAD_LIMIT_DIGITS=$(printf '%s' "$MAX_UPLOAD_SIZE_MB" | sed 's/^0*//')
 case "$MAX_UPLOAD_SIZE_MB" in
-    ''|*[!0-9]*|0|0[0-9]*)
-        echo "entrypoint-tls: MAX_UPLOAD_SIZE_MB must be a positive whole number, got '$MAX_UPLOAD_SIZE_MB'" >&2
-        exit 1
-        ;;
+    *[!0-9]*) UPLOAD_LIMIT_DIGITS="" ;;
 esac
-UPLOAD_BODY_LIMIT_MB=$((MAX_UPLOAD_SIZE_MB + 1))
+if [ -z "$UPLOAD_LIMIT_DIGITS" ] || [ "${#UPLOAD_LIMIT_DIGITS}" -gt 5 ]; then
+    echo "entrypoint-tls: MAX_UPLOAD_SIZE_MB must be a whole number from 1 to 99999, got '$MAX_UPLOAD_SIZE_MB'" >&2
+    exit 1
+fi
+UPLOAD_BODY_LIMIT_MB=$((UPLOAD_LIMIT_DIGITS + 1))
 export UPLOAD_BODY_LIMIT_MB
 
 mkdir -p "$(dirname "$TEMPLATE")"

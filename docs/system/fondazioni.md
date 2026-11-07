@@ -65,8 +65,9 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   schema (the details are never echoed); then the ids (404).
 - The one exception to `require_json` is the document upload of phase 2 (`POST /api/kbs/{kb_id}/documents`): it takes
   `multipart/form-data`, but only with the header `X-Requested-With: XMLHttpRequest` (a form of another site cannot send
-  it); without it the request gets 422 `validation_error` like any other non-JSON body. The upload API is described in
-  the area page of phase 2; `ApiError` can carry `extra` fields that go inside the `error` object.
+  it); without it the request gets 422 `validation_error` like any other non-JSON body. The upload route stores the
+  file in `UPLOAD_DIR` (the `uploads` volume, mounted on the backend at `/data/uploads`) under the document id;
+  `ApiError` can carry `extra` fields that go inside the `error` object.
 - Other generic answers: 404 `not_found` ("Not Found") for an
   unknown path and 405 `method_not_allowed` ("Method Not Allowed"); other HTTP errors `http_error`.
 - `UserOut` = `{"id", "username", "role", "is_active", "language"}` (never a password or hash);
