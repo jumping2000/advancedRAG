@@ -113,12 +113,7 @@ def settings_for(upload_dir: Path, ollama_url: str, docling_url: str | None = No
         "docling_api_key": API_KEY,
         "embedding_model": MODEL,
         "embedding_dimensions": DIMENSIONS,
-        # Short sections stay whole: one chunk per section
-        "chunk_min_words": 1,
-        "chunk_target_words": 10,
-        "chunk_max_words": 20,
-        "chunk_overlap_percent": 0,
-    }
+    }  # the chunker keeps its defaults: a short section is one chunk
     values.update(overrides)
     return make_settings(**values)
 
