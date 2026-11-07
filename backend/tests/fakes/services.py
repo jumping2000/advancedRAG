@@ -58,6 +58,8 @@ class FakeOllama:
     invalid_body: bool = False
     # The answer has this many vectors more (or fewer, if negative) than the request has texts.
     vector_count_delta: int = 0
+    # The same for one request only: {request number (1 is the first): delta}, added to `vector_count_delta`.
+    vector_count_deltas: dict[int, int] = field(default_factory=dict)
     # Seconds to wait before answering, for the timeout tests.
     delay_seconds: float = 0.0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -121,7 +123,7 @@ class _OllamaHandler(_Quiet):
         elif state.invalid_body:
             _json(self, 200, {"embeddings": "not a list of vectors"})
         else:
-            count = max(0, len(texts) + state.vector_count_delta)
+            count = max(0, len(texts) + state.vector_count_delta + state.vector_count_deltas.get(number, 0))
             vectors = [
                 fake_vector(texts[index] if index < len(texts) else f"extra {index}", state.dimensions)
                 for index in range(count)

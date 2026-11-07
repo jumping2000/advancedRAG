@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.config import Settings
 from app.db.models import Chunk, IndexingProfile
 from app.documents.queue import INGESTION_QUEUE, PROCESS_DOCUMENT_JOB, enqueue_document
+from app.documents.repository import DocumentRepository
 from app.ingestion import jobs, pipeline
 from app.ingestion.jobs import process_document_job
 from app.ingestion.pipeline import process_document
@@ -240,6 +241,85 @@ async def test_AC_034_the_original_is_deleted_when_the_document_is_ready(
 
     assert (await state_of(engine, document_id))["status"] == "READY"
     assert files_in(tmp_path) == []
+
+
+# A document that goes away while the job is working -----------------------------------------------------------------
+
+
+async def delete_while_processing(engine: AsyncEngine, tmp_path: Path, ollama_url: str) -> uuid.UUID:
+    """Run the job on a document, delete the document row as soon as it is PROCESSING (the job is waiting for Ollama),
+    and wait for the job to finish without an error."""
+    settings = settings_for(tmp_path, ollama_url)
+    document_id = await add_document(engine, tmp_path, STORY.encode())
+    job = asyncio.create_task(process_document(document_id, settings, sleep=no_sleep))
+    async with asyncio.timeout(20):
+        while (await state_of_or_none(engine, document_id) or {}).get("status") != "PROCESSING":
+            assert not job.done(), "the job ended before the document was seen PROCESSING"
+            await asyncio.sleep(0.02)
+        async with engine.begin() as connection:
+            await connection.execute(text("delete from documents where id = :id"), {"id": document_id})
+        await job
+    return document_id
+
+
+async def state_of_or_none(engine: AsyncEngine, document_id: uuid.UUID) -> dict[str, Any] | None:
+    async with engine.connect() as connection:
+        row = (
+            await connection.execute(text("select status from documents where id = :id"), {"id": document_id})
+        ).one_or_none()
+    return None if row is None else dict(row._mapping)
+
+
+@pytest.mark.parametrize("ollama_modes", [{}, {"fail_status": 500}], ids=["ollama answers", "ollama fails"])
+async def test_AC_015_a_document_deleted_while_the_job_waits_for_ollama_is_not_written_back(
+    engine: AsyncEngine, tmp_path: Path, ollama_modes: dict[str, Any]
+) -> None:
+    """Whether the vectors arrive (the save finds no document) or the call fails (the FAILED mark finds none): no
+    FAILED row, no chunk, no document that comes back, and the original is left where it is."""
+    with fake_ollama(dimensions=DIMENSIONS, delay_seconds=0.5, **ollama_modes) as ollama:
+        document_id = await delete_while_processing(engine, tmp_path, ollama.url)
+
+    assert len(ollama.requests) == 1
+    assert await state_of_or_none(engine, document_id) is None
+    async with engine.connect() as connection:
+        assert await connection.scalar(text("select count(*) from documents")) == 0
+        assert await connection.scalar(text("select count(*) from chunks")) == 0
+    assert (tmp_path / str(document_id)).is_file()
+
+
+@pytest.mark.parametrize("status", ["QUEUED", "READY", "FAILED", "UNSUPPORTED"])
+async def test_AC_015_marking_a_document_that_is_not_processing_changes_nothing(
+    engine: AsyncEngine, tmp_path: Path, status: str
+) -> None:
+    """The worker marks READY or FAILED only a document it still holds: otherwise the call says False."""
+    document_id = await add_document(engine, tmp_path, None, status=status)
+    before = await state_of(engine, document_id)
+    async with async_sessionmaker[AsyncSession](engine, expire_on_commit=False)() as session:
+        repository = DocumentRepository(session)
+        assert await repository.mark_ready(document_id, 2) is False
+        assert await repository.mark_failed(document_id, "unexpected_error", "Some reason") is False
+        claimed = await repository.claim(document_id)
+        assert (claimed is not None) == (status == "QUEUED")
+
+    after = await state_of(engine, document_id)
+    if status == "QUEUED":  # claim took it, which is its job; the two marks did not
+        assert after["status"] == "PROCESSING"
+        assert after["status_reason_code"] is None
+    else:
+        assert after == before
+
+
+async def test_AC_015_marking_a_document_that_does_not_exist_says_false_and_creates_nothing(
+    engine: AsyncEngine,
+) -> None:
+    missing = uuid.uuid4()
+    async with async_sessionmaker[AsyncSession](engine, expire_on_commit=False)() as session:
+        repository = DocumentRepository(session)
+        assert await repository.mark_ready(missing, 1) is False
+        assert await repository.mark_failed(missing, "unexpected_error", "Some reason") is False
+        assert await repository.claim(missing) is None
+
+    assert await state_of_or_none(engine, missing) is None
 
 
 # A job that has nothing to do ----------------------------------------------------------------------------------------
