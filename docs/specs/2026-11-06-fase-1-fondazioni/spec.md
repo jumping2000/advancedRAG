@@ -1,6 +1,6 @@
 # SPEC-2026-11-06-fase-1-fondazioni: Fase 1 – Fondamenta (stack, autenticazione, utenti, KB)
 
-- Status: approved
+- Status: implemented
 - Owner: jumping2000
 
 ## Problem and goal
