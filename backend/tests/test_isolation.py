@@ -282,6 +282,7 @@ async def test_AC_024_a_user_with_no_kb_gets_the_same_404_for_every_kb(world: Wo
 
     assert [response.status_code for response in responses] == [404] * 4
     assert len({response.content for response in responses}) == 1
+    assert error_code(responses[0]) == "kb_not_found"
 
 
 @pytest.mark.parametrize("bad_id", ["not-a-uuid", "123"])

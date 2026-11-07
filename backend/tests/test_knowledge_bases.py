@@ -9,6 +9,7 @@ not 500; a kb_id that is not a UUID gets the same 404 kb_not_found as an unknown
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -752,3 +753,80 @@ async def test_AC_025_without_a_session_every_kb_api_gets_401(engine: AsyncEngin
 
     assert await names(engine) == ["Manuali"]
     assert await member_rows(engine) == []
+
+
+# Owner's decision after the review: the description is trimmed like the name ---------------------------------------
+
+
+async def test_AC_020_the_description_is_trimmed_and_a_blank_one_becomes_null(
+    engine: AsyncEngine, admin: httpx.AsyncClient
+) -> None:
+    trimmed = await create(admin, "Manuali", "  Manuali tecnici \t")
+    blank = await create(admin, "Procedure", "   ")
+
+    assert trimmed.status_code == 201
+    assert trimmed.json()["description"] == "Manuali tecnici"
+    assert blank.status_code == 201
+    assert blank.json()["description"] is None
+    assert [row["description"] for row in await kb_rows(engine)] == ["Manuali tecnici", None]
+
+
+async def test_AC_020_the_500_characters_of_the_description_are_counted_after_trimming(
+    engine: AsyncEngine, admin: httpx.AsyncClient
+) -> None:
+    accepted = await create(admin, "Manuali", "  " + "d" * 500 + "  ")
+    rejected = await create(admin, "Procedure", "  " + "d" * 501 + "  ")
+
+    assert accepted.status_code == 201
+    assert accepted.json()["description"] == "d" * 500
+    assert rejected.status_code == 422
+    assert error_code(rejected) == "validation_error"
+    assert await names(engine) == ["Manuali"]
+
+
+async def test_AC_020_patch_trims_the_description_and_a_blank_one_clears_it(
+    engine: AsyncEngine, admin: httpx.AsyncClient
+) -> None:
+    kb_id = await add_kb(engine, "Manuali", "Manuali tecnici")
+
+    trimmed = await admin.patch(f"{KBS}/{kb_id}", json={"description": " Manuali delle macchine  "})
+    assert trimmed.status_code == 200
+    assert trimmed.json()["description"] == "Manuali delle macchine"
+
+    blank = await admin.patch(f"{KBS}/{kb_id}", json={"description": " \t "})
+    assert blank.status_code == 200
+    assert blank.json()["description"] is None
+    assert [row["description"] for row in await kb_rows(engine)] == [None]
+
+
+# Review (low): characters PostgreSQL text refuses get 422, not 500 --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"name": "Man\x00uali"},
+        {"name": "Manuali", "description": "Manuali\x00tecnici"},
+        {"name": "Man\ud800uali"},
+        {"name": "Manuali", "description": "\udfffManuali"},
+    ],
+)
+async def test_AC_020_a_nul_or_lone_surrogate_character_gets_422_and_no_kb(
+    engine: AsyncEngine, admin: httpx.AsyncClient, body: dict[str, Any]
+) -> None:
+    # A 500 must be seen as a response, not as an exception raised through the test transport.
+    app = create_app(make_settings())
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as api:
+        assert (await login(api, ADMIN, ADMIN_PASSWORD)).status_code == 200
+        # json.dumps escapes the characters as \u sequences, as a browser would send them.
+        content, headers = json.dumps(body), {"Content-Type": "application/json"}
+        created = await api.post(KBS, content=content, headers=headers)
+        kb_id = await add_kb(engine, "Procedure")
+        patched = await api.patch(f"{KBS}/{kb_id}", content=content, headers=headers)
+
+    assert created.status_code == 422
+    assert error_code(created) == "validation_error"
+    assert patched.status_code == 422
+    assert error_code(patched) == "validation_error"
+    assert [(row["name"], row["description"]) for row in await kb_rows(engine)] == [("Procedure", None)]
