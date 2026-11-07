@@ -7,6 +7,8 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
+from app.ingestion.chunker import ChunkerConfig
+
 
 class Settings(BaseSettings):
     # The repository-root .env also works when the backend runs from backend/ (the later file wins).
@@ -27,6 +29,23 @@ class Settings(BaseSettings):
     upload_dir: Path = Path("/data/uploads")
     # Largest accepted file, in MiB (1 MiB = 1048576 bytes, the unit of Nginx's `m`).
     max_upload_size_mb: int = Field(default=20, gt=0)
+    # Indexing profile (REQ-013): the embedding model and the size of its vectors, and the chunker parameters (REQ-011).
+    # pgvector indexes at most 2000 dimensions of a `vector`.
+    embedding_model: str = Field(default="bge-m3", min_length=1)
+    embedding_dimensions: int = Field(default=1024, ge=1, le=2000)
+    chunk_target_words: int = 300
+    chunk_min_words: int = 50
+    chunk_max_words: int = 450
+    chunk_overlap_percent: int = 15
+
+    @property
+    def chunker_config(self) -> ChunkerConfig:
+        return ChunkerConfig(
+            target_words=self.chunk_target_words,
+            min_words=self.chunk_min_words,
+            max_words=self.chunk_max_words,
+            overlap_percent=self.chunk_overlap_percent,
+        )
 
     @property
     def sqlalchemy_url(self) -> URL:

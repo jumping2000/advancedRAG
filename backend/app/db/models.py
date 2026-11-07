@@ -3,9 +3,24 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Text, func, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from app.db.vector import Vector
 
 
 class Base(DeclarativeBase):
@@ -96,8 +111,80 @@ class Document(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'QUEUED'"))
     status_reason_code: Mapped[str | None] = mapped_column(Text, nullable=True)
     status_reason_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The profile the document was indexed with; set together with its chunks, null until then.
+    profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("indexing_profiles.id"), nullable=True
+    )
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class IndexingProfile(Base):
+    """Embedding model, dimensions, parser, chunker parameters and BM25 configuration that produced a set of chunks.
+    One row per configuration; documents and chunks keep the profile they were created with."""
+
+    __tablename__ = "indexing_profiles"
+    __table_args__ = (
+        CheckConstraint("dimensions between 1 and 2000", name="indexing_profiles_dimensions_check"),
+        UniqueConstraint(
+            "embedding_model",
+            "dimensions",
+            "parser",
+            "chunker",
+            "bm25_config",
+            name="indexing_profiles_configuration_key",
+        ),
+        UniqueConstraint("id", "dimensions", name="indexing_profiles_id_dimensions_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    embedding_model: Mapped[str] = mapped_column(Text, nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+    parser: Mapped[str] = mapped_column(Text, nullable=False)
+    chunker: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    bm25_config: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Chunk(Base):
+    """A piece of a document with its vector. The database keeps the vector and the profile consistent: the vector has
+    `dimensions` components (CHECK) and `(profile_id, dimensions)` is a row of `indexing_profiles` (foreign key). The
+    BM25 index `chunks_bm25` and the HNSW index of each profile exist only in the database (migration 0004 and
+    `ensure_profile`)."""
+
+    __tablename__ = "chunks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["profile_id", "dimensions"],
+            ["indexing_profiles.id", "indexing_profiles.dimensions"],
+            name="chunks_profile_fkey",
+        ),
+        CheckConstraint("position >= 0", name="chunks_position_check"),
+        CheckConstraint("word_count >= 0", name="chunks_word_count_check"),
+        CheckConstraint("vector_dims(embedding) = dimensions", name="chunks_embedding_dimensions_check"),
+        UniqueConstraint("document_id", "position", name="chunks_document_position_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    kb_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    section_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    word_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)

@@ -38,6 +38,12 @@ services:
       # Fixed here: the folder is the `uploads` volume, so .env cannot point it elsewhere
       UPLOAD_DIR: /data/uploads
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      CHUNK_TARGET_WORDS: ${CHUNK_TARGET_WORDS:-300}
+      CHUNK_MIN_WORDS: ${CHUNK_MIN_WORDS:-50}
+      CHUNK_MAX_WORDS: ${CHUNK_MAX_WORDS:-450}
+      CHUNK_OVERLAP_PERCENT: ${CHUNK_OVERLAP_PERCENT:-15}
     volumes:
       - uploads:/data/uploads
     depends_on:
