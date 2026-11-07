@@ -22,17 +22,11 @@ async function errorCode(response: Response): Promise<string> {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+/** One request. The caller sets the headers that go with its body; an error status becomes an ApiError. */
+async function send<T>(method: string, path: string, headers: Record<string, string>, body?: BodyInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`/api${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      credentials: "same-origin",
-    });
+    response = await fetch(`/api${path}`, { method, headers, body, credentials: "same-origin" });
   } catch {
     throw new ApiError(0, "network_error");
   }
@@ -41,13 +35,23 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (await response.json()) as T;
 }
 
+function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  return send<T>(method, path, headers, body === undefined ? undefined : JSON.stringify(body));
+}
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   delete: <T>(path: string) => request<T>("DELETE", path),
-  /** Skeleton (T-07): the upload of one file is not implemented yet. */
-  upload: <T>(path: string, file: File): Promise<T> =>
-    Promise.reject(new ApiError(0, `not_implemented ${path} ${file.name}`)),
+  /** One file as multipart/form-data in the field `file`. The browser sets the Content-Type with its boundary; the
+   * header X-Requested-With is what the backend asks of the upload instead of a JSON body (CSRF). */
+  upload: <T>(path: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return send<T>("POST", path, { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" }, form);
+  },
 };
