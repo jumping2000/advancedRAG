@@ -11,10 +11,10 @@ import unicodedata
 from app.ingestion.blocks import Block
 from app.ingestion.normalize import normalize_blocks, normalize_text
 
-# Written with escapes so that no editor can change the normalization form of the fixtures.
-E_ACUTE = "é"
-A_GRAVE = "à"
-E_NFD = "é"
+# Fixtures use \u escapes, never literal characters, so that no editor or formatter can change their form.
+E_ACUTE = "\u00e9"
+A_GRAVE = "\u00e0"
+E_NFD = "e\u0301"
 
 
 def test_AC_020_text_loses_control_characters_repeats_and_duplicate_paragraphs() -> None:
@@ -38,9 +38,9 @@ def test_AC_020_text_loses_control_characters_repeats_and_duplicate_paragraphs()
 
 
 def test_AC_020_accented_letters_end_in_nfc() -> None:
-    result = normalize_text(f"perch{E_NFD} citt{A_GRAVE} più")
+    result = normalize_text(f"perch{E_NFD} citt{A_GRAVE} piu\u0300")
 
-    assert result == f"perch{E_ACUTE} citt{A_GRAVE} più"
+    assert result == f"perch{E_ACUTE} citt{A_GRAVE} pi\u00f9"
     assert unicodedata.is_normalized("NFC", result)
 
 
@@ -53,7 +53,10 @@ def test_AC_020_windows_and_old_mac_line_ends_become_newlines() -> None:
 
 
 def test_AC_020_letters_digits_codes_and_punctuation_are_untouched() -> None:
-    text = "ISO-9001:2015, art. 5/b, v1.2.3 — «Ciò»; e-mail: Mario.Rossi@Example.IT (OK!) inter-\nnazionale"
+    text = (
+        "ISO-9001:2015, art. 5/b, v1.2.3 \u2014 \u00abCi\u00f2\u00bb; "
+        "e-mail: Mario.Rossi@Example.IT (OK!) inter-\nnazionale"
+    )
 
     assert normalize_text(text) == text
 
@@ -134,3 +137,37 @@ def test_AC_020_identical_table_rows_are_data_and_are_kept() -> None:
     rows = [Block("table_row", "x | 1"), Block("table_row", "x | 1")]
 
     assert normalize_blocks(rows) == rows
+
+
+def test_AC_020_whitespace_class_control_characters_become_one_space() -> None:
+    raw = "uno\x0bdue\x0ctre\x1cquattro\x1dcinque\x1esei\x1fsette\x85otto"
+
+    assert normalize_text(raw) == "uno due tre quattro cinque sei sette otto"
+
+
+def test_AC_020_spaces_around_a_whitespace_class_control_character_collapse_with_it() -> None:
+    assert normalize_text("a \x0c b") == "a b"
+    assert normalize_text("a\x0c\x0cb") == "a b"
+    assert normalize_text("a\x0b\tb") == "a b"
+
+
+def test_AC_020_the_other_control_characters_are_deleted_without_a_space() -> None:
+    assert normalize_text("para\x07grafo\x00 x\x1by\x7fz\x9f") == "paragrafo xyz"
+
+
+def test_AC_020_zero_width_space_bom_and_soft_hyphen_are_removed_everywhere() -> None:
+    assert normalize_text("a​b﻿c­d") == "abcd"
+    assert normalize_text("﻿inizio﻿") == "inizio"
+    assert normalize_text("co­operazione ​​ fine") == "cooperazione fine"
+
+
+def test_AC_020_the_other_format_characters_stay() -> None:
+    text = "a‌b‍c \U0001f468‍\U0001f469  ⁠"
+
+    assert normalize_text(text) == text
+
+
+def test_AC_020_invisible_characters_are_removed_in_blocks_too() -> None:
+    blocks = [Block("heading", "Tit​olo", level=1), Block("paragraph", "﻿un­ito"), Block("paragraph", "​")]
+
+    assert normalize_blocks(blocks) == [Block("heading", "Titolo", level=1), Block("paragraph", "unito")]

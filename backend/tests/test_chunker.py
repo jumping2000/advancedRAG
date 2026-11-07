@@ -12,7 +12,10 @@ The fixtures use unique words (`a0001`, `a0002`, ...) so that the words shared b
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
+
+import pytest
 
 from app.ingestion.blocks import Block
 from app.ingestion.chunker import ChunkDraft, ChunkerConfig, chunk_blocks
@@ -429,3 +432,71 @@ def test_AC_023_a_single_word_of_100000_characters_is_one_chunk_of_one_word() ->
     chunks = chunk_blocks([Block("paragraph", long_word)], DEFAULTS)
 
     assert [(c.content, c.word_count) for c in chunks] == [(long_word, 1)]
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Settings, rows between the target and the maximum, remainders that cannot be rebalanced, whitespace-only blocks
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        (300, 50, 200, 15),  # target above the maximum
+        (300, 400, 450, 15),  # minimum above the target
+        (300, -1, 450, 15),
+        (0, 0, 450, 15),
+        (-5, 0, 450, 15),
+        (300, 50, 450, 100),  # the overlap would be the whole target
+        (300, 50, 450, 150),
+        (300, 50, 450, -1),
+    ],
+)
+def test_AC_021_inconsistent_chunker_settings_are_rejected(settings: tuple[int, int, int, int]) -> None:
+    with pytest.raises(ValueError):
+        ChunkerConfig(*settings)
+
+
+def test_AC_021_consistent_chunker_settings_are_accepted() -> None:
+    assert ChunkerConfig(300, 50, 450, 0).overlap_percent == 0
+    assert ChunkerConfig(450, 450, 450, 99).max_words == 450
+    assert ChunkerConfig(1, 0, 1, 0).target_words == 1
+
+
+def test_AC_022_rows_longer_than_the_target_but_within_the_maximum_end_a_chunk_after_the_target() -> None:
+    rows = [Block("table_row", " ".join(words(f"q{i}x", 350))) for i in range(3)]
+
+    chunks = chunk_blocks(rows, DEFAULTS)
+
+    assert [c.content for c in chunks] == [r.text for r in rows]
+    assert [c.word_count for c in chunks] == [350, 350, 350]
+
+
+def test_AC_021_a_remainder_that_cannot_be_rebalanced_stays_a_chunk_of_its_own() -> None:
+    config = ChunkerConfig(target_words=100, min_words=60, max_words=120, overlap_percent=10)
+
+    chunks = chunk_blocks(paragraphs("a", 125), config)
+
+    # 100 + 25 new words do not fit in 120, and two halves would leave only 57 new words (below 60).
+    assert [c.word_count for c in chunks] == [100, 35]
+    assert shared_prefix_suffix(chunks[0], chunks[1]) == 10
+    assert join_without_overlap(chunks) == words("a", 125)
+
+
+def test_AC_023_blocks_of_only_white_space_give_no_chunks_in_linear_time() -> None:
+    started = time.perf_counter()
+
+    for text in (" " * 30_000, " \n" * 15_000, "\t \u00a0\u2003" * 10_000):
+        assert chunk_blocks([Block("paragraph", text), heading("Titolo"), Block("table_row", text)], DEFAULTS) == []
+
+    assert time.perf_counter() - started < 2.0
+
+
+def test_AC_023_a_long_run_of_white_space_between_two_words_is_kept_and_costs_linear_time() -> None:
+    started = time.perf_counter()
+
+    chunks = chunk_blocks([Block("paragraph", "uno" + " " * 30_000 + "due")], DEFAULTS)
+
+    assert [c.word_count for c in chunks] == [2]
+    assert chunks[0].content == "uno" + " " * 30_000 + "due"
+    assert time.perf_counter() - started < 2.0

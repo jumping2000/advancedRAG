@@ -160,7 +160,7 @@ def test_AC_018_crlf_and_cr_line_ends_give_the_same_blocks_as_lf() -> None:
 
     assert md(lf.replace("\n", "\r\n")) == expected
     assert md(lf.replace("\n", "\r")) == expected
-    assert read_text_document(("﻿" + lf).replace("\n", "\r\n").encode("utf-8"), "md") == expected
+    assert read_text_document(("\ufeff" + lf).replace("\n", "\r\n").encode("utf-8"), "md") == expected
     assert txt("uno\r\ndue\r\n\r\ntre") == [Block("paragraph", "uno\ndue"), Block("paragraph", "tre")]
 
 
@@ -195,11 +195,104 @@ def test_AC_018_empty_and_whitespace_only_input_give_no_blocks_and_no_chunks() -
 
 def test_AC_018_bom_crlf_and_control_characters_do_not_reach_the_chunks() -> None:
     clean = "# Guida\n\nPrimo paragrafo.\n\nSecondo paragrafo.\n"
-    dirty = "﻿# Guida\r\n\r\nPrimo\x00 para\x07grafo.\r\n\r\n\r\n\r\nSecondo  paragrafo.\r\n"
+    dirty = "\ufeff# Guida\r\n\r\nPrimo\x00 para\x07grafo.\r\n\r\n\r\n\r\nSecondo  paragrafo.\r\n"
 
     expected = chunk_blocks(normalize_blocks(md(clean)), DEFAULTS)
     chunks = chunk_blocks(normalize_blocks(read_text_document(dirty.encode("utf-8"), "md")), DEFAULTS)
 
     assert chunks == expected
     assert [c.content for c in chunks] == ["Primo paragrafo.\n\nSecondo paragrafo."]
-    assert all("﻿" not in c.content and "\r" not in c.content and "\x00" not in c.content for c in chunks)
+    assert all("\ufeff" not in c.content and "\r" not in c.content and "\x00" not in c.content for c in chunks)
+
+
+def test_AC_018_front_matter_with_lists_indentation_comments_and_blank_lines_is_recognised() -> None:
+    front = '---\ntitle: "Guida: base"\ntags:\n  - uno\n  - due\n- voce\n# commento\n\nautore:   Mario\n---'
+
+    assert md(f"{front}\n\n# Titolo") == [Block("paragraph", front), Block("heading", "Titolo", level=1)]
+
+
+def test_AC_018_front_matter_may_close_with_three_dots() -> None:
+    front = "---\n# commento\ntitle: x\n..."
+
+    assert md(f"{front}\n\nTesto") == [Block("paragraph", front), Block("paragraph", "Testo")]
+
+
+def test_AC_018_a_rule_followed_by_headings_and_prose_and_another_rule_is_not_front_matter() -> None:
+    text = "---\n\n# Titolo\n\nUn paragrafo che non e YAML.\n\n## Altro\n\n---\n\nFine."
+
+    assert md(text) == [
+        Block("paragraph", "---"),
+        Block("heading", "Titolo", level=1),
+        Block("paragraph", "Un paragrafo che non e YAML."),
+        Block("heading", "Altro", level=2),
+        Block("paragraph", "---"),
+        Block("paragraph", "Fine."),
+    ]
+
+
+def test_AC_018_lines_between_the_rules_that_are_not_yaml_keep_the_file_a_normal_markdown_text() -> None:
+    assert md("---\n# Titolo\nTesto libero senza chiave\n---\n") == [
+        Block("paragraph", "---"),
+        Block("heading", "Titolo", level=1),
+        Block("paragraph", "Testo libero senza chiave\n---"),
+    ]
+
+
+def test_AC_018_front_matter_closing_within_150_lines_is_recognised() -> None:
+    body = "\n".join(f"k{i}: v" for i in range(148))
+    front = f"---\n# Titolo\n{body}\n---"
+
+    assert md(front) == [Block("paragraph", front)]
+
+
+def test_AC_018_front_matter_closing_after_250_lines_is_not_front_matter() -> None:
+    body = "\n".join(f"k{i}: v" for i in range(250))
+
+    blocks = md(f"---\n# Titolo\n{body}\n---\n")
+
+    assert blocks[:2] == [Block("paragraph", "---"), Block("heading", "Titolo", level=1)]
+
+
+def test_AC_018_a_backtick_in_the_info_string_of_a_backtick_fence_makes_it_ordinary_text() -> None:
+    assert md("```a`b\n# titolo") == [Block("paragraph", "```a`b"), Block("heading", "titolo", level=1)]
+
+
+def test_AC_018_a_closing_fence_longer_than_the_opening_one_closes_the_block() -> None:
+    fence = "```\n# x\n`````"
+
+    assert md(f"{fence}\n# dopo") == [Block("paragraph", fence), Block("heading", "dopo", level=1)]
+
+
+def test_AC_018_a_shorter_closing_fence_does_not_close_the_block() -> None:
+    assert md("`````\n# x\n```\n# ancora dentro") == [Block("paragraph", "`````\n# x\n```\n# ancora dentro")]
+
+
+def test_AC_018_headings_indented_by_more_than_three_spaces_are_text() -> None:
+    assert md("    # codice") == [Block("paragraph", "# codice")]
+    assert md("riga\n    # dentro") == [Block("paragraph", "riga\n    # dentro")]
+    assert md("   # titolo") == [Block("heading", "titolo", level=1)]
+
+
+def test_AC_018_a_table_row_with_only_empty_cells_is_dropped() -> None:
+    assert md("| a | b |\n|---|---|\n| | |\n| 1 | 2 |") == [Block("table_row", "a | b"), Block("table_row", "1 | 2")]
+
+
+def test_AC_018_a_data_row_made_of_hyphens_is_not_the_delimiter_row() -> None:
+    assert md("| a | b |\n|---|---|\n| - | - |\n| 1 | 2 |") == [
+        Block("table_row", "a | b"),
+        Block("table_row", "- | -"),
+        Block("table_row", "1 | 2"),
+    ]
+
+
+def test_AC_018_only_the_second_row_of_a_table_is_the_delimiter_row() -> None:
+    assert md("| a | b |\n|---|---|\n|---|---|") == [Block("table_row", "a | b"), Block("table_row", "--- | ---")]
+    assert md("| - | - |\n| 1 | 2 |") == [Block("table_row", "- | -"), Block("table_row", "1 | 2")]
+
+
+def test_AC_018_every_table_has_its_own_delimiter_row() -> None:
+    assert md("| a |\n|---|\n\n| b |\n|:-:|\n| c |") == [
+        Block("table_row", "a"),
+        Block("table_row", "b"),
+        Block("table_row", "c"),
+    ]
