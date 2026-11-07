@@ -176,3 +176,34 @@ def test_AC_009_nginx_does_not_start_with_an_invalid_upload_limit(stack: Path, v
 
     assert result.returncode != 0
     assert "MAX_UPLOAD_SIZE_MB" in result.stdout + result.stderr
+
+
+def nginx_config(stack: Path, value: str) -> subprocess.CompletedProcess[str]:
+    """Render the configuration of the nginx service with MAX_UPLOAD_SIZE_MB=value and dump it (nginx -T)."""
+    return compose(
+        stack, "run", "--rm", "--no-deps", "-e", f"MAX_UPLOAD_SIZE_MB={value}", "nginx", "nginx", "-T",
+        check=False, timeout=90,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("value", "limit"),
+    [("20", "21m"), ("1", "2m"), ("020", "21m"), ("007", "8m"), ("09", "10m"), ("99999", "100000m"), ("", "21m")],
+)
+def test_AC_009_nginx_accepts_the_values_of_the_backend_and_adds_1_mb_in_decimal(
+    stack: Path, value: str, limit: str
+) -> None:
+    """Leading zeros are valid for the backend (020 is 20): the +1 must not be read as octal ("09" is not octal).
+    An empty value means the default, 20 MB."""
+    result = nginx_config(stack, value)
+
+    assert result.returncode == 0, result.stderr
+    assert f"client_max_body_size {limit};" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["100000", "999999999999", "99999999999999999999999", "1e3", "-1"])
+def test_AC_009_nginx_refuses_values_the_backend_cannot_use_or_that_are_absurdly_large(stack: Path, value: str) -> None:
+    result = nginx_config(stack, value)
+
+    assert result.returncode != 0
+    assert "MAX_UPLOAD_SIZE_MB" in result.stdout + result.stderr
