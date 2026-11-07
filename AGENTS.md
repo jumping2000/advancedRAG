@@ -32,6 +32,9 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 - Name uniqueness is left to unique indexes on `lower()` with names trimmed first; `IntegrityError` 23505 → 409.
 - Backend tests never set an ORM object loaded in the test session to a value the database refuses (autoflush).
 - A signed-in page shows its load errors without `role="alert"`: the header language selector owns the alert.
+- Polling tests in Vitest call `vi.useFakeTimers({ shouldAdvanceTime: true })` before rendering.
+- Multipart `fetch` calls set no `Content-Type` (the browser adds the boundary): `FormData` plus `X-Requested-With`.
+- Host ports in use by the e2e tests: 18080, 18180, 18181, 18280, 18380, 18480, 18543, 18544, 18580; next free: 18680.
 
 ## Rules
 - Do not modify: applied database migrations already merged into `main` (`backend/migrations/versions/`): add a new one
@@ -80,6 +83,8 @@ removed here.
 <!-- One line per area page, added when a feature closes: `docs/system/<area>.md`: what it covers -->
 - `docs/system/fondazioni.md`: stack (Compose, Nginx/TLS, health), login and sessions, users, knowledge bases and
   per-KB isolation (`KnowledgeBaseRepository`), UI pages and i18n
+- `docs/system/ingestion.md`: documents and ingestion (upload API and validation, RQ worker, Docling and Ollama pipeline,
+  chunks, indexing profiles and indexes, retention of originals, Documents page), with the notes for phase 3
 
 ## Documentation
 - Specs in `docs/specs/<id>/`. Read `spec.md` and `plan.md` before writing code.
