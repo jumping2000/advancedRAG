@@ -14,6 +14,9 @@ from app.db.vector import Vector
 from app.ingestion.chunker import ChunkDraft
 from app.ingestion.profile import embedding_expression
 
+# Upper bound of the rows an iterative HNSW scan may visit to fill the LIMIT (pgvector's default is 20000).
+_MAX_SCAN_TUPLES = 1_000_000
+
 
 class DocumentGone(Exception):
     """The document was deleted, or is no longer PROCESSING, while the worker was preparing its chunks."""
@@ -30,7 +33,10 @@ async def persist_chunks(
     chunks were saved. The document row is locked first (a concurrent deletion waits, then takes the chunks away with
     the document): if it is gone or not PROCESSING, DocumentGone. On any error the transaction is rolled back, so no
     chunk of the document is visible and its profile is unchanged, and the error propagates. The session's current
-    transaction, if any, is part of this one."""
+    transaction, if any, is part of this one.
+
+    Lock order: the document row, then the profile row (key share, by the foreign key). The chunks do not reference the
+    KB row, so the deletion of the KB (which locks the KB row and then its documents) cannot deadlock with this save."""
     try:
         locked = await session.execute(
             select(Document.id, Document.kb_id)
@@ -100,11 +106,26 @@ async def verify_indexes(
     if query is None:
         return False
     expression = embedding_expression(profile)
-    found = await session.scalar(
-        text(
-            f"select count(*) from (select id from chunks where document_id = :document_id and profile_id = :profile_id"
-            f" order by {expression} <=> CAST(:query AS vector) limit :expected) as nearest"
-        ).bindparams(bindparam("query", type_=Vector())),
-        {"document_id": document_id, "profile_id": profile.id, "query": query, "expected": expected},
-    )
+    # pgvector applies the WHERE of an HNSW scan after it, to the `hnsw.ef_search` (default 40) nearest rows: without
+    # iterative scanning a document of more than 40 chunks would be missed whenever the planner picks the HNSW index.
+    # The settings are local to a savepoint that is rolled back, so they do not stay in the caller's transaction.
+    nested = await session.begin_nested()
+    try:
+        await session.execute(
+            text(
+                "select set_config('hnsw.iterative_scan', 'relaxed_order', true),"
+                " set_config('hnsw.max_scan_tuples', :tuples, true)"
+            ),
+            {"tuples": str(_MAX_SCAN_TUPLES)},
+        )
+        found = await session.scalar(
+            text(
+                f"select count(*) from (select id from chunks where document_id = :document_id"
+                f" and profile_id = :profile_id order by {expression} <=> CAST(:query AS vector) limit :expected)"
+                f" as nearest"
+            ).bindparams(bindparam("query", type_=Vector())),
+            {"document_id": document_id, "profile_id": profile.id, "query": query, "expected": expected},
+        )
+    finally:
+        await nested.rollback()
     return bool(found == expected)

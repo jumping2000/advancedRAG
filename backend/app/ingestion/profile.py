@@ -93,8 +93,9 @@ async def ensure_profile(engine: AsyncEngine, settings: Settings) -> IndexingPro
             raise ProfileSetupError("the indexing profile was not found after it was created")
         await _create_hnsw_index(engine, profile)
     except (SQLAlchemyError, OSError) as error:
+        cause = str(getattr(error, "orig", None) or error).strip().splitlines()[0][:300]
         raise ProfileSetupError(
-            f"cannot create the indexing profile ({type(error).__name__}); check EMBEDDING_DIMENSIONS and "
-            "EMBEDDING_MODEL"
+            f"cannot create the indexing profile: {type(error).__name__}: {cause}; check EMBEDDING_DIMENSIONS and "
+            "EMBEDDING_MODEL, or the database connection"
         ) from error
     return profile

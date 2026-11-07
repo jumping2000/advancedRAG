@@ -53,13 +53,15 @@ def upgrade() -> None:
         "documents",
         sa.Column("profile_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("indexing_profiles.id"), nullable=True),
     )
+    # Target of the composite foreign key of the chunks.
+    op.create_unique_constraint("documents_id_kb_id_key", "documents", ["id", "kb_id"])
 
     op.execute(
         """
         CREATE TABLE chunks (
             id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-            kb_id uuid NOT NULL REFERENCES knowledge_bases (id) ON DELETE CASCADE,
-            document_id uuid NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
+            kb_id uuid NOT NULL,
+            document_id uuid NOT NULL,
             profile_id uuid NOT NULL,
             dimensions integer NOT NULL,
             position integer NOT NULL,
@@ -69,6 +71,8 @@ def upgrade() -> None:
             content text NOT NULL,
             word_count integer NOT NULL,
             embedding vector NOT NULL,
+            CONSTRAINT chunks_document_kb_fkey FOREIGN KEY (document_id, kb_id)
+                REFERENCES documents (id, kb_id) ON DELETE CASCADE,
             CONSTRAINT chunks_profile_fkey FOREIGN KEY (profile_id, dimensions)
                 REFERENCES indexing_profiles (id, dimensions),
             CONSTRAINT chunks_position_check CHECK (position >= 0),
@@ -78,6 +82,7 @@ def upgrade() -> None:
         )
         """
     )
+    op.execute("CREATE INDEX chunks_kb_id_idx ON chunks (kb_id)")
     # Lexical index (pg_search): the key field and the two filter fields are indexed with the text fields.
     op.execute(
         """
@@ -94,7 +99,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX chunks_bm25")
-    op.execute("DROP TABLE chunks")
+    op.execute("DROP TABLE chunks")  # with its other indexes
+    op.drop_constraint("documents_id_kb_id_key", "documents", type_="unique")
     op.drop_column("documents", "profile_id")
     op.drop_table("indexing_profiles")
     # The extensions stay: they are created idempotently and other objects may use them.

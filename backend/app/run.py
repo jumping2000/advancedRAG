@@ -44,8 +44,9 @@ def main() -> None:
         # Exit code 1 and the message (with the variable name) on stderr; uvicorn is not started (REQ-004).
         raise SystemExit(f"Startup stopped: {error}") from None
     except ProfileSetupError as error:
-        # Same for the indexing profile (REQ-013): the message names EMBEDDING_DIMENSIONS and EMBEDDING_MODEL.
-        raise SystemExit(f"Startup stopped: {error}") from None
+        # Same for the indexing profile (REQ-013): the message names EMBEDDING_DIMENSIONS and EMBEDDING_MODEL and
+        # carries the cause (which can also be a database problem); the error is chained, not hidden.
+        raise SystemExit(f"Startup stopped: {error}") from error
     uvicorn.run(
         "app.main:create_app",
         factory=True,
