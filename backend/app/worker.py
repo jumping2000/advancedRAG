@@ -12,12 +12,13 @@ import logging
 import socket
 import sys
 import threading
+from datetime import datetime
 
 from redis import Redis
 from redis.exceptions import RedisError
 from rq import Queue, SimpleWorker
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.documents.queue import INGESTION_QUEUE
 
 HEARTBEAT_PREFIX = "ingestion:worker:alive:"
@@ -56,6 +57,18 @@ def start_heartbeat(connection: Redis, interval_seconds: float = HEARTBEAT_INTER
 def healthcheck(connection: Redis) -> bool:
     """True if the heartbeat key of this host exists."""
     return bool(connection.exists(heartbeat_key()))
+
+
+CLEANUP_INTERVAL_SECONDS = 3600.0
+
+
+def startup(settings: Settings, now: datetime | None = None) -> None:
+    """Skeleton (T-06): the recovery and the cleanup before the worker accepts jobs."""
+
+
+def start_cleanup_loop(settings: Settings, interval_seconds: float = CLEANUP_INTERVAL_SECONDS) -> threading.Event:
+    """Skeleton (T-06): the hourly cleanup in a daemon thread."""
+    return threading.Event()
 
 
 def main(argv: list[str] | None = None) -> None:
