@@ -932,3 +932,73 @@ it("SPEC-2026-11-07-fase-2-ingestion/AC-043: a document already gone (404) leave
   await waitFor(() => expect(screen.queryByRole("cell", { name: "manuale.txt" })).not.toBeInTheDocument());
   expect(await screen.findByText("Documento non trovato.")).toBeInTheDocument();
 });
+
+// Switching KB while a retry or a delete is in flight -------------------------------------------------------------------
+
+/** A response that the test lets through when it wants, to put a request of KB A and the list of KB B in a given order. */
+function gate<T>() {
+  let open: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
+}
+
+it("SPEC-2026-11-07-fase-2-ingestion/AC-042: a retry still in flight when the admin switches KB does not blank the list of the new KB", async () => {
+  const failed = doc(1, manuali, "rotto.docx", "FAILED", failedWith("docling_unreachable"));
+  const other = doc(2, procedure, "altro.txt", "READY");
+  const retryAnswer = gate<Response>();
+  const listOfProcedure = gate<Response>();
+  adminRoutes(
+    { documents: [failed] },
+    {
+      [retry(manuali, failed)]: () => retryAnswer.promise,
+      [list(procedure)]: () => listOfProcedure.promise,
+    },
+  );
+  await openDocumentsPage();
+  await chooseKb(manuali);
+  fireEvent.click(within(await rowOf("rotto.docx")).getByRole("button", { name: "Riprova" }));
+
+  await chooseKb(procedure); // while the retry of "Manuali" has not been answered yet
+  await act(async () => {
+    retryAnswer.open(json(202, { ...failed, status: "QUEUED", status_reason: null }));
+  });
+  await act(async () => {
+    listOfProcedure.open(json(200, [other]));
+  });
+
+  expect(await rowOf("altro.txt")).toBeInTheDocument();
+  expect(screen.queryByRole("cell", { name: "rotto.docx" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("File da caricare")).toBeEnabled();
+});
+
+it("SPEC-2026-11-07-fase-2-ingestion/AC-043: a delete still in flight when the admin switches KB does not blank the list of the new KB", async () => {
+  const ready = doc(1, manuali, "manuale.txt", "READY");
+  const other = doc(2, procedure, "altro.txt", "READY");
+  const deleteAnswer = gate<Response>();
+  const listOfProcedure = gate<Response>();
+  adminRoutes(
+    { documents: [ready] },
+    {
+      [remove(manuali, ready)]: () => deleteAnswer.promise,
+      [list(procedure)]: () => listOfProcedure.promise,
+    },
+  );
+  await openDocumentsPage();
+  await chooseKb(manuali);
+  fireEvent.click(within(await rowOf("manuale.txt")).getByRole("button", { name: "Elimina" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Conferma" }));
+
+  await chooseKb(procedure); // while the delete in "Manuali" has not been answered yet
+  await act(async () => {
+    deleteAnswer.open(noContent());
+  });
+  await act(async () => {
+    listOfProcedure.open(json(200, [other]));
+  });
+
+  expect(await rowOf("altro.txt")).toBeInTheDocument();
+  expect(screen.queryByRole("cell", { name: "manuale.txt" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("File da caricare")).toBeEnabled();
+});
