@@ -904,8 +904,9 @@ async def test_AC_032_a_job_timeout_of_the_queue_fails_the_document_with_unexpec
         await process_document(document_id, settings, sleep=no_sleep)
 
     assert calls == ["convert"]
+    # T-06: a timeout of the queue has a message of its own (it was the generic text of unexpected_error)
     state = await assert_failed(
-        engine, tmp_path, document_id, "unexpected_error", "Unexpected error while processing the document"
+        engine, tmp_path, document_id, "unexpected_error", "The processing time limit was exceeded"
     )
     assert SECRET not in state["status_reason_message"]
 
