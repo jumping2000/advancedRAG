@@ -22,13 +22,16 @@ user's, gets 401; deactivation and password reset increment the epoch, so they e
 admin creates users (names unique on `lower()`, trimmed, 3–64 letters, digits, `.`, `_`, `-`; passwords of at least 12
 characters, stored as Argon2id), deactivates/reactivates them (never themself) and resets their passwords.
 
-The admin creates knowledge bases (names trimmed, 1–100 characters, unique on `lower()`; description optional, up to
-500 characters), renames them, deletes them (with their assignments) and assigns or removes users. Every read of a
+The admin creates knowledge bases (names trimmed, 1–100 characters, unique on `lower()`; description optional,
+trimmed, up to 500 characters, a blank one stored as null; NUL and lone surrogate characters get 422), renames them,
+deletes them (with their assignments) and assigns or removes users. Every read of a
 KB goes through `KnowledgeBaseRepository`, which for any role other than the exact `admin` joins `kb_members` on the
 user's id in the same SQL query: a user lists and opens only the assigned KBs, and a KB that is not assigned, does not
 exist or has an id that is not a UUID gets the same 404 `kb_not_found`. The UI (Italian or English: browser language
-first, then the language saved in the profile) has the login page, the list of the own KBs as home page with the
-opened KB under `/kbs/{id}`, and for the admin the Users and Knowledge Base pages; a `user` sees neither admin menu.
+first, then the language saved in the profile) has the login page, the KB list as home page ("Le tue knowledge base"
+for a user, "Tutte le knowledge base" for the admin) with the opened KB under `/kbs/{id}`, and for the admin the Users
+and Knowledge Base pages; a `user` sees neither admin menu. The member picker of the Knowledge Base page offers only
+active users; an inactive user already assigned stays listed, marked as deactivated.
 
 ## Interfaces
 Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; the UI translates the `code`.
@@ -45,16 +48,19 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 | `GET /api/kbs` | session | 200 `[KnowledgeBaseOut]` (own KBs; all for the admin), ordered by `lower(name)` | 401 |
 | `GET /api/kbs/{kb_id}` | session | 200 `KnowledgeBaseOut` | 404 `kb_not_found` (not assigned, unknown, not a UUID) |
 | `POST /api/kbs` `{"name", "description"?}` | admin | 201 `KnowledgeBaseOut` | 409 `kb_name_taken`; 422 `validation_error` |
-| `PATCH /api/kbs/{kb_id}` `{"name"?, "description"?}` | admin | 200 `KnowledgeBaseOut` (only the fields sent change; `"description": null` clears it) | 404 `kb_not_found`; 409 `kb_name_taken`; 422 `validation_error` (also `"name": null`) |
+| `PATCH /api/kbs/{kb_id}` `{"name"?, "description"?}` | admin | 200 `KnowledgeBaseOut` (only the fields sent change; `"description": null` or a blank one clears it) | 404 `kb_not_found`; 409 `kb_name_taken`; 422 `validation_error` (also `"name": null`) |
 | `DELETE /api/kbs/{kb_id}` | admin | 204 (assignments removed by cascade) | 404 `kb_not_found` |
 | `GET /api/kbs/{kb_id}/members` | admin | 200 `[UserOut]`, ordered by `lower(username)` | 404 `kb_not_found` |
 | `PUT /api/kbs/{kb_id}/members/{user_id}` | admin | 204 (idempotent: one row, also under concurrency; inactive users accepted) | 404 `kb_not_found`, then 404 `user_not_found` (also for a non-UUID id) |
 | `DELETE /api/kbs/{kb_id}/members/{user_id}` | admin | 204 (also when the user was not assigned) | 404 `kb_not_found`, then 404 `user_not_found` |
 
-- Generic answers: 401 `not_authenticated` on every API but health and login without a valid session; 403
-  `forbidden` for a `user` on every admin API, checked before the ids and the body (same 403 whatever they are);
-  422 `validation_error` for an invalid body or, through `require_json`, for a `POST`/`PUT`/`PATCH`/`DELETE` whose
-  `Content-Type` is not `application/json` (the details are never echoed); 404 `not_found` ("Not Found") for an
+- Order of the checks: a `POST`/`PUT`/`PATCH`/`DELETE` whose `Content-Type` is not `application/json`
+  (`require_json`) and a body that is not well-formed JSON get 422 `validation_error` first, before the session;
+  then 401 `not_authenticated` on every API but health and login without a valid session; then 403 `forbidden` for
+  a `user` on every admin API, before the schema of the body, the ids and any database read (the same 403 for any
+  KB or user id, so nothing depends on which KBs exist); then 422 `validation_error` for a body that fails the
+  schema (the details are never echoed); then the ids (404).
+- Other generic answers: 404 `not_found` ("Not Found") for an
   unknown path and 405 `method_not_allowed` ("Method Not Allowed"); other HTTP errors `http_error`.
 - `UserOut` = `{"id", "username", "role", "is_active", "language"}` (never a password or hash);
   `KnowledgeBaseOut` = `{"id", "name", "description", "created_at"}`. Extra fields in a body are ignored.
@@ -72,7 +78,7 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 flowchart TD
     R[Request] --> N{"Nginx: path under /api/?"}
     N -- no --> F[frontend files, index.html fallback]
-    N -- yes --> J{"POST/PUT/PATCH/DELETE with a non-JSON Content-Type?"}
+    N -- yes --> J{"unsafe method with a non-JSON Content-Type, or malformed JSON?"}
     J -- yes --> E422[422 validation_error]
     J -- no --> H{"/api/health or /api/auth/login?"}
     H -- yes --> P[answered without a session]
@@ -81,12 +87,19 @@ flowchart TD
     C -- yes --> A{admin API?}
     A -- yes --> AD{"role == admin?"}
     AD -- no --> E403[403 forbidden]
-    AD -- yes --> K
-    A -- no --> K{"route with a kb_id?"}
-    K -- no --> OK[operation]
+    AD -- yes --> V{body valid for the schema?}
+    V -- no --> E422
+    V -- yes --> AU{"kb_id, if any, is a UUID?"}
+    AU -- no --> E404[404 kb_not_found]
+    AU -- yes --> AR["repository by id: create, update, delete; members via get_for"]
+    AR --> AT{KB found?}
+    AT -- no --> E404
+    AT -- yes --> OK[operation]
+    A -- no --> K{"GET /api/kbs/kb_id?"}
+    K -- no --> OK
     K -- yes --> U{kb_id is a UUID?}
-    U -- no --> E404[404 kb_not_found]
-    U -- yes --> Q["KnowledgeBaseRepository.get_for: one query, joined with kb_members unless admin"]
+    U -- no --> E404
+    U -- yes --> Q["get_for: one query, joined with kb_members unless admin"]
     Q --> T{KB found?}
     T -- no --> E404
     T -- yes --> OK
@@ -112,12 +125,17 @@ sequenceDiagram
             API->>S: delete(token)
             API-->>B: 401 not_authenticated
         else valid user
-            API->>Repo: get_for(user, parse_kb_id(kb_id))
-            Repo->>DB: SELECT knowledge_bases JOIN kb_members ON user_id (role user)
-            alt no row (not assigned, unknown or invalid id)
-                API-->>B: 404 kb_not_found
-            else row found
-                API-->>B: 200 KnowledgeBaseOut
+            API->>API: parse_kb_id(kb_id)
+            alt not a UUID
+                API-->>B: 404 kb_not_found (no database read)
+            else UUID
+                API->>Repo: get_for(user, kb_id)
+                Repo->>DB: SELECT knowledge_bases JOIN kb_members ON user_id (role user)
+                alt no row (not assigned or unknown)
+                    API-->>B: 404 kb_not_found
+                else row found
+                    API-->>B: 200 KnowledgeBaseOut
+                end
             end
         end
     end
@@ -151,8 +169,8 @@ classDiagram
         +redis_url: str
         +ollama_base_url: str
         +docling_base_url: str
-        +admin_username: str
-        +admin_password: SecretStr
+        +admin_username: str | None
+        +admin_password: SecretStr | None
         +session_idle_timeout_minutes: int
         +sqlalchemy_url: URL
     }
@@ -244,12 +262,15 @@ erDiagram
   same SQL statement; only the exact role `admin` skips the join (fail closed). `tests/test_isolation.py` proves it
   also by calling the repository directly and counting the statements.
 - "Not assigned", "unknown" and "not a UUID" must stay indistinguishable for a `user` (same 404 body); the admin
-  routes check the role before any id or body, so a `user` gets the same 403 whatever it sends.
+  routes check the role before the schema of the body, the ids and any database read, so a `user` gets the same 403
+  whatever ids it sends (only a non-JSON or malformed body gets 422 first, which says nothing about the KBs).
 - Uniqueness of user and KB names is decided by the unique indexes on `lower()` (names trimmed first): concurrent
   requests get 409, never 500. The database collation (`en_US.utf8`) folds Unicode case (`Élite` = `élite`). Login,
   instead, matches the username exactly (owner's decision, T-03).
 - Applied migrations (`0001_users`, `0002_knowledge_bases`) are never edited: a change is a new migration. The DB
-  also enforces the KB length limits with check constraints.
+  also enforces the KB length limits with check constraints, and `kb_members.user_id` is indexed for the user filter
+  (both confirmed by the owner). PostgreSQL `text` refuses NUL and lone surrogates: the KB schema rejects them with
+  422 before the database.
 - No secret in responses or logs: the engine sets `hide_parameters=True` (no bound values in statement logs or
   database errors) and validation errors never echo the input.
 - Owner's decisions in the area: T-02 HTTPS only with `compose.tls.yaml` (with certificates but no `HTTPS_PORT` Nginx
@@ -258,7 +279,10 @@ erDiagram
   or an `ADMIN_PASSWORD` shorter than 12 characters; T-04 a failed language save goes back to the previous language
   with a translated error, and after sign-out the login page keeps the last language used; T-05 a non-UUID user id
   gets 404 `user_not_found`, deactivation asks for a confirmation, the admin's own row has no Deactivate button, and
-  resetting the own password signs the admin out to the login page with a message.
+  resetting the own password signs the admin out to the login page with a message; T-06 an inactive user can be
+  assigned through the API but the picker offers only active users (inactive members stay listed, marked), the
+  admin's home is titled "Tutte le knowledge base", the description is trimmed like the name, and the Knowledge Base
+  page layout and texts are as built.
 - The home page shows a failed KB list load as a plain message, not an `alert`: the header's language selector owns
   the alert of a failed language save.
 - Tests: backend tests use the real ParadeDB and Redis of `compose.test.yaml` (ports 55432 and 56379) with fresh state
