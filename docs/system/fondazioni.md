@@ -7,7 +7,10 @@
 The platform runs as a Docker Compose stack of four services: `nginx` (the only one with a host port, `HTTP_PORT`,
 default 80), `backend` (FastAPI on port 8000, inside the Compose network only), `redis` and `db` (ParadeDB, PostgreSQL 17
 with the `vector` and `pg_search` extensions). Nginx serves the compiled React frontend and proxies `/api/` to the
-backend, always overwriting `X-Forwarded-Proto` with its own scheme. HTTPS is on only when the stack starts with
+backend (the proxy lines live in `nginx/api-proxy.conf`, included by both server templates), always overwriting
+`X-Forwarded-Proto` with its own scheme. The request body limit is 1 MB, except for the document upload
+`/api/kbs/{id}/documents`, where it is `MAX_UPLOAD_SIZE_MB` + 1 MB and a request above it gets 413 with the JSON error
+body `file_too_large` (phase 2, T-01). HTTPS is on only when the stack starts with
 `compose.tls.yaml` (which publishes `HTTPS_PORT`, default 443, and passes it to Nginx) **and** `nginx/certs/` holds
 both `cert.pem` and `key.pem`: then HTTP answers 301 to `https://`. Any other combination stays HTTP only, and the
 entrypoint logs why (missing file, or `HTTPS_PORT not set`). At startup the backend (`python -m app.run`) applies the
@@ -60,6 +63,10 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   a `user` on every admin API, before the schema of the body, the ids and any database read (the same 403 for any
   KB or user id, so nothing depends on which KBs exist); then 422 `validation_error` for a body that fails the
   schema (the details are never echoed); then the ids (404).
+- The one exception to `require_json` is the document upload of phase 2 (`POST /api/kbs/{kb_id}/documents`): it takes
+  `multipart/form-data`, but only with the header `X-Requested-With: XMLHttpRequest` (a form of another site cannot send
+  it); without it the request gets 422 `validation_error` like any other non-JSON body. The upload API is described in
+  the area page of phase 2; `ApiError` can carry `extra` fields that go inside the `error` object.
 - Other generic answers: 404 `not_found` ("Not Found") for an
   unknown path and 405 `method_not_allowed` ("Method Not Allowed"); other HTTP errors `http_error`.
 - `UserOut` = `{"id", "username", "role", "is_active", "language"}` (never a password or hash);
@@ -69,7 +76,8 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 - Configuration (`.env.example`): `POSTGRES_PASSWORD` (any character, set on the URL object, never pasted into
   `DATABASE_URL`), `HTTP_PORT`, `HTTPS_PORT` (with `compose.tls.yaml`), `DATABASE_URL`, `REDIS_URL` (set by
   `compose.yaml`), `OLLAMA_BASE_URL`, `DOCLING_BASE_URL`, `HEALTH_CHECK_TIMEOUT_SECONDS` (2), `ADMIN_USERNAME`,
-  `ADMIN_PASSWORD`, `SESSION_IDLE_TIMEOUT_MINUTES` (480).
+  `ADMIN_PASSWORD`, `SESSION_IDLE_TIMEOUT_MINUTES` (480), and from phase 2 `UPLOAD_DIR` (fixed to the `uploads` volume,
+  `/data/uploads`, by `compose.yaml`) and `MAX_UPLOAD_SIZE_MB` (20, in MiB; passed to the backend and to Nginx).
 
 ## Diagrams
 
