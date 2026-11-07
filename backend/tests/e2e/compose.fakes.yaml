@@ -1,0 +1,35 @@
+# Override for the end-to-end tests that need Ollama and Docling:
+#   docker compose -f compose.yaml -f backend/tests/e2e/compose.fakes.yaml ...
+# It adds the service `fakes` (the fake Ollama on 11434 and the fake Docling on 5001 of backend/tests/fakes/services.py,
+# published on no host port) and points backend and worker at it. The paths are relative to compose.yaml.
+services:
+  fakes:
+    image: python:3.12.16-slim
+    working_dir: /app
+    command: ["python", "-m", "tests.fakes.services"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+    volumes:
+      - ./backend/tests/fakes:/app/tests/fakes:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11434/api/version', timeout=5)"]
+      interval: 2s
+      timeout: 6s
+      retries: 30
+
+  backend:
+    environment:
+      OLLAMA_BASE_URL: http://fakes:11434
+      DOCLING_BASE_URL: http://fakes:5001
+    depends_on:
+      fakes:
+        condition: service_healthy
+
+  worker:
+    environment:
+      OLLAMA_BASE_URL: http://fakes:11434
+      DOCLING_BASE_URL: http://fakes:5001
+    depends_on:
+      fakes:
+        condition: service_healthy
