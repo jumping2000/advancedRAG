@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # The ranges are checked by `_check_profile_settings`, so that the error names the environment variable.
     embedding_model: str = "bge-m3"
     embedding_dimensions: int = 1024
+    # The embedding texts go to Ollama in groups of this size, each request with this timeout (REQ-012).
+    embedding_batch_size: int = 16
+    embedding_timeout_seconds: float = 120
     chunk_target_words: int = 300
     chunk_min_words: int = 50
     chunk_max_words: int = 450

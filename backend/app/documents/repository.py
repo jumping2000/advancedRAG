@@ -71,3 +71,12 @@ class DocumentRepository:
         )
         await self.session.commit()
         return deleted is not None
+
+    async def claim(self, document_id: uuid.UUID) -> Document | None:
+        return None
+
+    async def mark_ready(self, document_id: uuid.UUID, chunk_count: int) -> bool:
+        return False
+
+    async def mark_failed(self, document_id: uuid.UUID, code: str, message: str) -> bool:
+        return False
