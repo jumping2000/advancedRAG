@@ -1,7 +1,7 @@
 # SPEC-2026-11-06-fase-1-fondazioni
 """AC-001, AC-002 (REQ-001): the full docker compose stack, started from a filled .env.
 
-Revised by SPEC-2026-11-07-fase-2-ingestion (REQ-001): the stack has a fifth service, the `worker`."""
+Revised for phase 2 (its REQ-001): the stack has a fifth service, the `worker`."""
 
 from __future__ import annotations
 
