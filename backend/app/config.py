@@ -1,6 +1,7 @@
 """Application settings read from the environment (.env)."""
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,6 +23,10 @@ class Settings(BaseSettings):
     admin_username: str | None = None
     admin_password: SecretStr | None = None
     session_idle_timeout_minutes: int = Field(default=480, gt=0)
+    # Uploaded originals live here until the document is processed (compose.yaml fixes it to the `uploads` volume).
+    upload_dir: Path = Path("/data/uploads")
+    # Largest accepted file, in MiB (1 MiB = 1048576 bytes, the unit of Nginx's `m`).
+    max_upload_size_mb: int = Field(default=20, gt=0)
 
     @property
     def sqlalchemy_url(self) -> URL:
