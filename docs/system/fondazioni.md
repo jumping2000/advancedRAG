@@ -26,12 +26,41 @@ The worker (`app/worker.py`) runs the jobs of the RQ queue `ingestion` one at a 
 job). While it runs, a daemon thread writes the Redis key `ingestion:worker:alive:{hostname}` (value `1`, expiry 30
 seconds) every 10 seconds; `python -m app.worker --healthcheck`, the Compose health check, exits 0 if the key of its own
 host exists and 1 otherwise. A job (`process_document_job`) takes a document from QUEUED to PROCESSING in one statement
-(no QUEUED row: it ends quietly), reads a TXT or MD as UTF-8, normalizes and chunks it, asks Ollama for the vectors in
-groups of `EMBEDDING_BATCH_SIZE` (16) texts (timeout `EMBEDDING_TIMEOUT_SECONDS`, 120), saves all the chunks in one
-transaction, checks both indexes, then marks the document READY with its `chunk_count` and deletes the original. Any
-failure makes the document FAILED with a reason and no chunk, and keeps the original. Interim until phase 2 T-05: PDF,
-DOCX, PPTX and XLSX end FAILED `unexpected_error` ("Docling parsing is not available yet"), a text with nothing to read
-FAILED `parse_failed`, and a failed step is not repeated. The detail of the pipeline is in the phase 2 spec and plan.
+(no QUEUED row: it ends quietly), then reads it: a PDF, DOCX, PPTX or XLSX goes to Docling (`DoclingClient`: `POST
+{DOCLING_BASE_URL}/v1/convert/file`, multipart field `files` named `<document id>.<format>`, form fields `from_formats`
+= the format, `to_formats` = `json`, `do_ocr` = `false`, header `X-Api-Key` only when `DOCLING_API_KEY` is set, timeout
+`DOCLING_TIMEOUT_SECONDS`, 600) and its `document.json_content` (a DoclingDocument) becomes blocks: headings with their
+level, paragraphs, one block per table row (cells joined by " | "), the page of each from `prov[].page_no`; the runs of
+an inline group are one paragraph; pictures and the furniture layer (headers, footers) are left out. A TXT or MD is read
+directly as UTF-8. The text is normalized; if fewer than `MIN_EXTRACTED_CHARS` (50) characters that are not white remain
+(or nothing that can be chunked), the document becomes UNSUPPORTED `no_text_extracted` and its original is deleted at
+once. Otherwise Ollama gives the vectors in groups of `EMBEDDING_BATCH_SIZE` (16) texts (timeout
+`EMBEDDING_TIMEOUT_SECONDS`, 120), the chunks are saved in one transaction, both indexes are checked, and the document
+is marked READY with its `chunk_count` and its original is deleted. Any failure makes the document FAILED with a code
+and a fixed English message and no chunk, and keeps the original (for `FAILED_ORIGINAL_RETENTION_DAYS` days, cleanup in
+T-06) so that the admin can retry.
+
+Attempts (REQ-016, `app/ingestion/retry.py`): the Docling call and each group of embeddings are repeated on their own,
+only after a temporary error (connection refused, timeout, 5xx, 429), up to `INGESTION_MAX_ATTEMPTS` (3) attempts in
+all, waiting `INGESTION_RETRY_BACKOFF_SECONDS` (10 s) and then twice that (20 s) between them; any other error is not
+repeated. The reasons (`status_reason.code`, with its fixed message):
+
+| Code | Final state | When |
+|---|---|---|
+| `docling_unreachable` | FAILED | Docling refuses the connection, times out or hangs up, on every attempt |
+| `docling_error` | FAILED | Docling answers 5xx or 429 on every attempt, or an answer that is not a conversion |
+| `parse_failed` | FAILED | Docling refuses the file (any other 4xx, or `status: failure`), or a TXT/MD is not UTF-8 |
+| `no_text_extracted` | UNSUPPORTED | too little text after the normalization (original deleted at once) |
+| `embedding_unreachable` | FAILED | Ollama refuses the connection, times out or hangs up, on every attempt |
+| `embedding_error` | FAILED | Ollama answers 5xx or 429 on every attempt, or any other 4xx at once |
+| `embedding_invalid_response` | FAILED | a wrong number of vectors, a vector that is empty, ragged, not made of numbers or holding NaN or infinity |
+| `embedding_dimension_mismatch` | FAILED | well formed vectors whose size is not `EMBEDDING_DIMENSIONS` (the profile's) |
+| `verification_failed` | FAILED | the vector or the BM25 index did not return every saved chunk (the chunks are deleted) |
+| `unexpected_error` | FAILED | anything else: a bug, a database error, a missing original, the 3600 s timeout of the job |
+
+The messages never carry the content, a file name or what the other service said. Logs carry the document id, the status,
+the reason code, the step (`docling`, `embeddings`) and the attempt number, never content, file names, vectors or
+exception messages (REQ-102).
 
 Users are local accounts with role `admin` or `user`. Login matches the username exactly and creates a server-side
 session in Redis (`session:<token>`, idle TTL `SESSION_IDLE_TIMEOUT_MINUTES`, renewed by every request) with an
@@ -69,6 +98,7 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 | `POST /api/kbs` `{"name", "description"?}` | admin | 201 `KnowledgeBaseOut` | 409 `kb_name_taken`; 422 `validation_error` |
 | `PATCH /api/kbs/{kb_id}` `{"name"?, "description"?}` | admin | 200 `KnowledgeBaseOut` (only the fields sent change; `"description": null` or a blank one clears it) | 404 `kb_not_found`; 409 `kb_name_taken`; 422 `validation_error` (also `"name": null`) |
 | `DELETE /api/kbs/{kb_id}` | admin | 204 (assignments removed by cascade) | 404 `kb_not_found` |
+| `POST /api/kbs/{kb_id}/documents/{document_id}/retry` (no body) | admin | 202 `DocumentOut` in QUEUED, without reason, and a new job on the queue (phase 2, T-05) | 404 `kb_not_found`, `document_not_found`; 409 `not_retryable` (the document is not FAILED, also for the second of two simultaneous presses), 409 `original_missing` (FAILED, but the original was deleted) |
 | `GET /api/kbs/{kb_id}/members` | admin | 200 `[UserOut]`, ordered by `lower(username)` | 404 `kb_not_found` |
 | `PUT /api/kbs/{kb_id}/members/{user_id}` | admin | 204 (idempotent: one row, also under concurrency; inactive users accepted) | 404 `kb_not_found`, then 404 `user_not_found` (also for a non-UUID id) |
 | `DELETE /api/kbs/{kb_id}/members/{user_id}` | admin | 204 (also when the user was not assigned) | 404 `kb_not_found`, then 404 `user_not_found` |
@@ -95,7 +125,15 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   `compose.yaml`), `OLLAMA_BASE_URL`, `DOCLING_BASE_URL`, `HEALTH_CHECK_TIMEOUT_SECONDS` (2), `ADMIN_USERNAME`,
   `ADMIN_PASSWORD`, `SESSION_IDLE_TIMEOUT_MINUTES` (480), and from phase 2 `UPLOAD_DIR` (fixed to the `uploads` volume,
   `/data/uploads`, by `compose.yaml`) and `MAX_UPLOAD_SIZE_MB` (20, in MiB; passed to the backend and to Nginx),
-  `EMBEDDING_BATCH_SIZE` (16, at least 1) and `EMBEDDING_TIMEOUT_SECONDS` (120, above 0) for the worker.
+  `EMBEDDING_BATCH_SIZE` (16, at least 1) and `EMBEDDING_TIMEOUT_SECONDS` (120, above 0) for the worker, and, only for
+  the worker (the backend does not receive them), `DOCLING_API_KEY` (a secret, empty in `.env.example`; blank means no key),
+  `DOCLING_TIMEOUT_SECONDS` (600, above 0), `INGESTION_MAX_ATTEMPTS` (3, at least 1), `INGESTION_RETRY_BACKOFF_SECONDS`
+  (10, 0 or more) and `MIN_EXTRACTED_CHARS` (50, 0 or more).
+- The retry route (phase 2, T-05) is the second POST without a JSON body: a POST with no `Content-Type` passes
+  `require_json`, so the UI presses the button with a plain `fetch` POST. It checks the original with `UploadStorage`
+  before it requeues (`DocumentRepository.requeue` changes FAILED to QUEUED in one statement, so two simultaneous
+  requests queue the document once), and a failure to reach Redis after that leaves the document QUEUED (T-06's
+  start-up recovery puts QUEUED documents without a job back on the queue).
 
 ## Diagrams
 
@@ -325,8 +363,10 @@ erDiagram
 - Stack: [compose.yaml](../../compose.yaml), [compose.tls.yaml](../../compose.tls.yaml),
   [nginx/entrypoint-tls.sh](../../nginx/entrypoint-tls.sh), [backend/app/run.py](../../backend/app/run.py),
   [backend/app/api/health.py](../../backend/app/api/health.py).
-- Worker (phase 2, T-04): [worker.py](../../backend/app/worker.py), [jobs.py](../../backend/app/ingestion/jobs.py),
-  [pipeline.py](../../backend/app/ingestion/pipeline.py), [embeddings.py](../../backend/app/ingestion/embeddings.py).
+- Worker (phase 2, T-04 and T-05): [worker.py](../../backend/app/worker.py), [jobs.py](../../backend/app/ingestion/jobs.py),
+  [pipeline.py](../../backend/app/ingestion/pipeline.py), [embeddings.py](../../backend/app/ingestion/embeddings.py),
+  [docling.py](../../backend/app/ingestion/docling.py), [retry.py](../../backend/app/ingestion/retry.py),
+  [errors.py](../../backend/app/ingestion/errors.py), [routes.py of the documents](../../backend/app/documents/routes.py).
 - Access: [backend/app/auth/deps.py](../../backend/app/auth/deps.py),
   [backend/app/auth/routes.py](../../backend/app/auth/routes.py),
   [backend/app/auth/sessions.py](../../backend/app/auth/sessions.py),
@@ -340,4 +380,7 @@ erDiagram
   [KnowledgeBaseAdminPage.tsx](../../frontend/src/pages/admin/KnowledgeBaseAdminPage.tsx),
   [UsersPage.tsx](../../frontend/src/pages/admin/UsersPage.tsx).
 - Tests: `backend/tests/` (`test_isolation.py`, `test_knowledge_bases.py`, `test_users.py`, `test_auth.py`, ...),
-  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`), `frontend/src/**/*.test.tsx`.
+  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`), `frontend/src/**/*.test.tsx`;
+  phase 2, T-05: `test_docling.py`, `test_retry.py`, `test_pipeline_errors.py`, `test_retry_route.py`,
+  `test_logging_privacy.py` and the opt-in `tests/live/test_live_services.py` (`LIVE_SERVICES=1`, marker `live`, never in
+  the default run or in CI: run it once by hand against your real Docling and Ollama).
