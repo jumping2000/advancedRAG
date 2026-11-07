@@ -1,4 +1,4 @@
-"""Container entry point: apply the migrations, create the first admin, then start uvicorn."""
+"""Container entry point: apply the migrations, create the first admin and the indexing profile, start uvicorn."""
 
 import asyncio
 from pathlib import Path
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.auth.bootstrap import MissingAdminConfig, ensure_admin
 from app.config import Settings, get_settings
 from app.db.session import create_engine
+from app.ingestion.profile import ProfileSetupError, ensure_profile
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -29,6 +30,7 @@ async def bootstrap(settings: Settings) -> None:
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             await ensure_admin(session, settings)
+        await ensure_profile(engine, settings)
     finally:
         await engine.dispose()
 
@@ -40,6 +42,9 @@ def main() -> None:
         asyncio.run(bootstrap(settings))
     except MissingAdminConfig as error:
         # Exit code 1 and the message (with the variable name) on stderr; uvicorn is not started (REQ-004).
+        raise SystemExit(f"Startup stopped: {error}") from None
+    except ProfileSetupError as error:
+        # Same for the indexing profile (REQ-013): the message names EMBEDDING_DIMENSIONS and EMBEDDING_MODEL.
         raise SystemExit(f"Startup stopped: {error}") from None
     uvicorn.run(
         "app.main:create_app",

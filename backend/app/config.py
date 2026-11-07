@@ -2,8 +2,9 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -33,10 +34,19 @@ class Settings(BaseSettings):
     # pgvector indexes at most 2000 dimensions of a `vector`.
     embedding_model: str = Field(default="bge-m3", min_length=1)
     embedding_dimensions: int = Field(default=1024, ge=1, le=2000)
-    chunk_target_words: int = 300
-    chunk_min_words: int = 50
-    chunk_max_words: int = 450
-    chunk_overlap_percent: int = 15
+    chunk_target_words: int = Field(default=300, ge=1)
+    chunk_min_words: int = Field(default=50, ge=0)
+    chunk_max_words: int = Field(default=450, ge=1)
+    chunk_overlap_percent: int = Field(default=15, ge=0, lt=100)
+
+    @model_validator(mode="after")
+    def _chunk_sizes_are_consistent(self) -> Self:
+        if not self.chunk_min_words <= self.chunk_target_words <= self.chunk_max_words:
+            raise ValueError(
+                "CHUNK_MIN_WORDS <= CHUNK_TARGET_WORDS <= CHUNK_MAX_WORDS is required, got "
+                f"{self.chunk_min_words}, {self.chunk_target_words}, {self.chunk_max_words}"
+            )
+        return self
 
     @property
     def chunker_config(self) -> ChunkerConfig:
