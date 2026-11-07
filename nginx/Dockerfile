@@ -9,6 +9,7 @@ RUN npm run build
 FROM nginx:1.29.8-alpine
 # entrypoint-tls.sh picks one of the two server templates at every start (REQ-002)
 COPY nginx/default.conf.template nginx/tls.conf.template /etc/nginx/server-templates/
+COPY nginx/api-proxy.conf /etc/nginx/snippets/api-proxy.conf
 COPY --chmod=755 nginx/entrypoint-tls.sh /entrypoint-tls.sh
 COPY --from=frontend /frontend/dist /usr/share/nginx/html
 ENTRYPOINT ["/entrypoint-tls.sh"]

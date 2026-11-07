@@ -10,6 +10,17 @@ CERTS_DIR=/etc/nginx/certs
 SOURCE_DIR=/etc/nginx/server-templates
 TEMPLATE=/etc/nginx/templates/default.conf.template
 
+# Body limit of the document upload route (api-proxy.conf, templates): the file limit plus 1 MB of multipart framing.
+MAX_UPLOAD_SIZE_MB="${MAX_UPLOAD_SIZE_MB:-20}"
+case "$MAX_UPLOAD_SIZE_MB" in
+    ''|*[!0-9]*|0|0[0-9]*)
+        echo "entrypoint-tls: MAX_UPLOAD_SIZE_MB must be a positive whole number, got '$MAX_UPLOAD_SIZE_MB'" >&2
+        exit 1
+        ;;
+esac
+UPLOAD_BODY_LIMIT_MB=$((MAX_UPLOAD_SIZE_MB + 1))
+export UPLOAD_BODY_LIMIT_MB
+
 mkdir -p "$(dirname "$TEMPLATE")"
 HTTPS_PORT="${HTTPS_PORT:-}"
 if [ -f "$CERTS_DIR/cert.pem" ] && [ -f "$CERTS_DIR/key.pem" ] && [ -n "$HTTPS_PORT" ]; then
