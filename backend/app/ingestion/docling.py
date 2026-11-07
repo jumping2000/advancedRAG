@@ -1,19 +1,25 @@
 """Client of docling-serve and the reader of its DoclingDocument (REQ-008, REQ-016).
 
 `DoclingClient.convert` sends the file to `POST {base_url}/v1/convert/file` (multipart field `files`; form fields
-`from_formats` = the one format, `to_formats` = json, `do_ocr` = false: there is no OCR) and reads
-`document.json_content` of the answer. Errors are classified for the pipeline: connection errors and timeouts
-(`docling_unreachable`), 5xx and 429 (`docling_error`) may succeed if repeated (`TemporaryError`); a refusal of the file
-(any other 4xx, or `status: failure`: `parse_failed`) and an answer that is not a conversion (`docling_error`) are final
-(`PermanentError`). The messages are fixed text: they never carry the file name, the content, or what Docling says.
+`from_formats` = the one format, `to_formats` = json, `do_ocr` = false: there is no OCR, `include_images` = true or
+false) and reads `document.json_content` of the answer. Errors are classified for the pipeline:
+- may succeed if repeated (`TemporaryError`): connection errors and timeouts (`docling_unreachable`), 5xx and 429
+  (`docling_error`);
+- final (`PermanentError`): a refused key, 401 or 403 (`docling_error`, the message names DOCLING_API_KEY); a refusal
+  of the file, any other 4xx or `status: failure` (`parse_failed`); an answer that is not a conversion
+  (`docling_error`).
+A `partial_success` is accepted: the number of errors Docling reported (never their text) is left in `partial_errors`
+for the caller to log. The messages are fixed text: they never carry the file name, the content, or what Docling says.
 
 `docling_json_to_blocks` walks the DoclingDocument depth first from `body.children`, whose `$ref`s name entries of
 `texts`, `groups`, `tables` and `pictures` (and which have `children` of their own). The title and the section headers
 are headings, every other text (text, list item, caption, code, ...) a paragraph, and a table gives one `table_row` per
-row of `data.grid`, the cells joined by " | ". The runs of an inline group are the pieces of one paragraph and are
-joined by a space. Pictures and everything of the `furniture` layer (headers and footers) are left out. The page is the
-first `prov[].page_no`, None when there is none. The reader never raises on a document with missing or wrong parts, and
-every node is read at most once, so references that loop end.
+row of `data.grid`, the cells joined by " | ". A table without `grid` is rebuilt from `data.table_cells` by their row
+and column offsets; a merged cell repeats its text in each row it spans (a known limit). The runs of an inline group are
+the pieces of one paragraph and are joined by a space. Pictures and everything of the `furniture` layer (headers and
+footers) are left out. The page is the first `prov[].page_no`, None when there is none. The reader never raises on a
+document with missing or wrong parts, and every node is read at most once, so references that loop end. A node nested
+deeper than 200 levels is not read: the walk stops there instead of exhausting the stack.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TypeGuard
 
 import httpx
 
@@ -35,10 +42,12 @@ _MIME_TYPES: dict[str, str] = {
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
+_REFUSED_KEY = (401, 403)
 _TOO_MANY_REQUESTS = 429
 _SERVER_ERROR = 500
 _CLIENT_ERROR = 400
 _MAX_DEPTH = 200
+_MAX_INDEX_DIGITS = 6  # a reference to more than a million nodes is not one the reader follows
 _COLLECTIONS = ("texts", "groups", "tables", "pictures")
 _FURNITURE_LABELS = ("page_header", "page_footer")
 
@@ -49,9 +58,12 @@ class DoclingClient:
         self.api_key = api_key
         self.timeout = timeout
         self.include_images = include_images
+        # The number of errors Docling reported on its last conversion when it answered `partial_success`, else None.
+        self.partial_errors: int | None = None
 
     async def convert(self, path: Path, filename: str, fmt: DocumentFormat) -> list[Block]:
         """Send the file to Docling and return its blocks in reading order."""
+        self.partial_errors = None
         data = await asyncio.to_thread(path.read_bytes)
         headers = {"X-Api-Key": self.api_key} if self.api_key else {}
         try:
@@ -59,7 +71,12 @@ class DoclingClient:
                 response = await client.post(
                     f"{self.base_url}{_CONVERT_PATH}",
                     headers=headers,
-                    data={"from_formats": fmt, "to_formats": "json", "do_ocr": "false"},
+                    data={
+                        "from_formats": fmt,
+                        "to_formats": "json",
+                        "do_ocr": "false",
+                        "include_images": "true" if self.include_images else "false",
+                    },
                     files={"files": (filename, data, _MIME_TYPES.get(fmt, "application/octet-stream"))},
                 )
         except httpx.TransportError:
@@ -68,12 +85,15 @@ class DoclingClient:
         status = response.status_code
         if status == _TOO_MANY_REQUESTS or status >= _SERVER_ERROR:
             raise TemporaryError("docling_error", f"The document parsing service answered with an error ({status})")
+        if status in _REFUSED_KEY:
+            raise PermanentError(
+                "docling_error", "The document parsing service refused the request: check DOCLING_API_KEY"
+            )
         if status >= _CLIENT_ERROR:
             raise PermanentError("parse_failed", "The document could not be parsed")
         return docling_json_to_blocks(self._json_content(response))
 
-    @staticmethod
-    def _json_content(response: httpx.Response) -> Mapping[str, object]:
+    def _json_content(self, response: httpx.Response) -> Mapping[str, object]:
         invalid = PermanentError("docling_error", "The document parsing service returned an invalid response")
         if response.status_code != httpx.codes.OK:
             raise invalid
@@ -89,6 +109,9 @@ class DoclingClient:
         content = document.get("json_content") if isinstance(document, dict) else None
         if not isinstance(content, dict) or not content:
             raise invalid
+        if body.get("status") == "partial_success":
+            errors = body.get("errors")
+            self.partial_errors = len(errors) if isinstance(errors, list) else 0
         return content
 
 
@@ -121,7 +144,7 @@ class _Reader:
         """The node a `{"$ref": "#/texts/3"}` names, with its key; None for anything else."""
         target = reference.get("$ref") if isinstance(reference, Mapping) else None
         parts = target.split("/") if isinstance(target, str) else []
-        if len(parts) != 3 or parts[0] != "#" or parts[1] not in _COLLECTIONS or not parts[2].isdecimal():
+        if len(parts) != 3 or parts[0] != "#" or parts[1] not in _COLLECTIONS or not _is_index(parts[2]):
             return None
         collection, index = parts[1], int(parts[2])
         nodes = self.document.get(collection)
@@ -195,13 +218,19 @@ class _Reader:
     def _table(self, node: Mapping[str, object]) -> None:
         data = node.get("data")
         grid = data.get("grid") if isinstance(data, Mapping) else None
-        if not isinstance(grid, list):
-            return
+        if isinstance(grid, list):
+            rows = [[_cell_text(cell) for cell in row] if isinstance(row, list) else [] for row in grid]
+        else:
+            rows = _rows_from_cells(data.get("table_cells") if isinstance(data, Mapping) else None)
         page = _page(node)
-        for row in grid:
-            cells = [_cell_text(cell) for cell in row] if isinstance(row, list) else []
+        for cells in rows:
             if any(cells):
                 self.result.append(Block("table_row", " | ".join(cells), page=page))
+
+
+def _is_index(text: str) -> bool:
+    """ASCII digits only and a short number: `int()` of 5000 digits raises, and `isdecimal()` accepts other scripts."""
+    return 0 < len(text) <= _MAX_INDEX_DIGITS and text.isascii() and text.isdigit()
 
 
 def _is_plain_run(node: Mapping[str, object]) -> bool:
@@ -213,6 +242,26 @@ def _is_plain_run(node: Mapping[str, object]) -> bool:
     )
 
 
+def _rows_from_cells(table_cells: object) -> list[list[str]]:
+    """The rows of a table that has no `grid`, rebuilt from its cells: by start row, each row in start column order. A
+    cell without integer offsets is ignored."""
+    found: list[tuple[int, int, str]] = []
+    for cell in table_cells if isinstance(table_cells, list) else []:
+        if not isinstance(cell, Mapping):
+            continue
+        row, column = cell.get("start_row_offset_idx"), cell.get("start_col_offset_idx")
+        if _is_int(row) and _is_int(column):
+            found.append((row, column, _cell_text(cell)))
+    rows: dict[int, list[tuple[int, str]]] = {}
+    for row, column, text in found:
+        rows.setdefault(row, []).append((column, text))
+    return [[text for _, text in sorted(rows[row], key=lambda entry: entry[0])] for row in sorted(rows)]
+
+
+def _is_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _cell_text(cell: object) -> str:
     text = cell.get("text") if isinstance(cell, Mapping) else cell
     return text.strip() if isinstance(text, str) else ""
@@ -220,7 +269,7 @@ def _cell_text(cell: object) -> str:
 
 def _level(node: Mapping[str, object]) -> int:
     level = node.get("level")
-    return level if isinstance(level, int) and not isinstance(level, bool) and level >= 1 else 1
+    return level if _is_int(level) and level >= 1 else 1
 
 
 def _page(node: Mapping[str, object]) -> int | None:
