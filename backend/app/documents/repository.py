@@ -85,6 +85,10 @@ class DocumentRepository:
             return set()
         return set((await self.session.scalars(select(Document.id).where(Document.id.in_(ids)))).all())
 
+    async def statuses(self, ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, str]:
+        """Skeleton (T-06): the status of each of the ids that is a document, looked up in batches."""
+        return {}
+
     async def delete(self, kb_id: uuid.UUID, document_id: uuid.UUID) -> bool:
         deleted = await self.session.scalar(
             delete(Document).where(Document.kb_id == kb_id, Document.id == document_id).returning(Document.id)
