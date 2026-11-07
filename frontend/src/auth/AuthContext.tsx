@@ -57,8 +57,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const setLanguage = useCallback(
     async (language: Language) => {
+      const previous = i18n.resolvedLanguage;
       await i18n.changeLanguage(language);
-      if (user) setUser(await api.patch<User>("/auth/me", { language }));
+      if (!user) return;
+      try {
+        setUser(await api.patch<User>("/auth/me", { language }));
+      } catch (error) {
+        // What is shown always matches what is saved: a failed save goes back to the previous language.
+        await i18n.changeLanguage(previous);
+        throw error;
+      }
     },
     [user],
   );
