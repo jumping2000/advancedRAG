@@ -27,11 +27,12 @@ from redis import Redis as SyncRedis
 from redis.asyncio import Redis
 from rq import Queue, SimpleWorker
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from app.auth.passwords import hash_password
 from app.config import Settings
 from app.db.models import User
+from app.db.session import create_engine
 from app.documents.queue import INGESTION_QUEUE
 from app.ingestion import jobs
 from app.main import create_app
@@ -78,20 +79,27 @@ class Collector(logging.Handler):
 
 @contextmanager
 def all_logs() -> Iterator[Collector]:
+    """Collect every record of every logger at INFO. The migrations of the schema fixture run Alembic's `fileConfig`,
+    which disables every logger that exists at that moment (the application's, httpx, RQ): they are enabled again here
+    for the time of the test, or nothing of them would be collected."""
     collector = Collector()
-    saved = {name: (logging.getLogger(name).level, logging.getLogger(name).propagate) for name in LOGGERS}
-    for name in LOGGERS:
-        logger = logging.getLogger(name)
+    loggers = [logging.getLogger(name) for name in LOGGERS]
+    existing = [logger for logger in logging.root.manager.loggerDict.values() if isinstance(logger, logging.Logger)]
+    saved = {logger: (logger.level, logger.propagate, logger.disabled) for logger in {*loggers, *existing}}
+    for logger in saved:
+        logger.disabled = False
+    for logger in loggers:
         logger.setLevel(logging.INFO)
         logger.addHandler(collector)
     try:
         yield collector
     finally:
-        for name, (level, propagate) in saved.items():
-            logger = logging.getLogger(name)
+        for logger in loggers:
             logger.removeHandler(collector)
+        for logger, (level, propagate, disabled) in saved.items():
             logger.setLevel(level)
             logger.propagate = propagate
+            logger.disabled = disabled
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +108,7 @@ def schema() -> None:
 
 
 async def reset_state() -> AsyncEngine:
-    engine = create_async_engine(make_settings().sqlalchemy_url)
+    engine = create_engine(make_settings().sqlalchemy_url)
     async with engine.begin() as connection:
         await connection.execute(
             text("truncate table indexing_profiles, documents, kb_members, knowledge_bases, users cascade")
@@ -180,18 +188,15 @@ async def upload_all(upload_dir: Path) -> tuple[uuid.UUID, dict[str, str]]:
 
 
 async def retry_and_read(upload_dir: Path, kb: uuid.UUID, ids: dict[str, str], retry: str | None) -> dict[str, Any]:
-    engine = create_async_engine(make_settings().sqlalchemy_url)
+    """Optionally press Retry on one document, then list the documents of the KB by their id."""
     app = create_app(make_settings(upload_dir=upload_dir))
-    try:
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as api:
-            login = await api.post("/api/auth/login", json={"username": "anna", "password": PASSWORD})
-            assert login.status_code == 200
-            if retry is not None:
-                assert (await api.post(f"/api/kbs/{kb}/documents/{ids[retry]}/retry")).status_code == 202
-            listed = (await api.get(f"/api/kbs/{kb}/documents")).json()
-        return {document["id"]: document for document in listed}
-    finally:
-        await engine.dispose()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as api:
+        login = await api.post("/api/auth/login", json={"username": "anna", "password": PASSWORD})
+        assert login.status_code == 200
+        if retry is not None:
+            assert (await api.post(f"/api/kbs/{kb}/documents/{ids[retry]}/retry")).status_code == 202
+        listed = (await api.get(f"/api/kbs/{kb}/documents")).json()
+    return {document["id"]: document for document in listed}
 
 
 def test_AC_046_no_log_of_a_processed_or_failed_document_holds_its_content_its_name_or_a_vector(
@@ -225,6 +230,9 @@ def test_AC_046_no_log_of_a_processed_or_failed_document_holds_its_content_its_n
     vectors = [fake_vector(sent, DIMENSIONS) for sent in ollama.requests[0].texts]
 
     names = [logger for logger, _ in logs.lines]
+    assert any(name.startswith("app.") for name in names), (
+        "the application logged nothing: the collection is not working"
+    )
     assert any(name.startswith("rq") for name in names), "the RQ worker logged nothing: the collection is not working"
     assert any(name.startswith("sqlalchemy") for name in names), "no SQL statement was logged: nothing collected"
     assert any(name.startswith("httpx") for name in names), "no HTTP request was logged: nothing collected"
