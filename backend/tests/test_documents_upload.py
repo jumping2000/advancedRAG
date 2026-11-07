@@ -533,6 +533,78 @@ async def test_AC_005_two_files_in_one_request_get_422_and_create_nothing(
     await assert_nothing_created(engine, upload_dir)
 
 
+@pytest.mark.parametrize(
+    ("method", "suffix"),
+    [
+        ("POST", "/documents/{document}"),
+        ("POST", "/documents/{document}/retry"),
+        ("PUT", "/documents"),
+        ("PATCH", "/documents"),
+        ("DELETE", "/documents/{document}"),
+        ("PUT", "/members/{document}"),
+        ("POST", "/members"),
+        ("POST", ""),
+    ],
+)
+async def test_AC_005_multipart_with_the_header_gets_through_only_on_post_to_the_exact_upload_path(
+    engine: AsyncEngine,
+    admin: httpx.AsyncClient,
+    kb: uuid.UUID,
+    upload_dir: Path,
+    method: str,
+    suffix: str,
+) -> None:
+    """The exception of require_json is POST on /api/kbs/{id}/documents and nothing else: not the trailing-slash
+    form, not a subpath, not another method, not another route of the KB. Nothing is created."""
+    document = uuid.uuid4()
+    body, content_type = multipart("note.txt", TEXT, "text/plain")
+
+    response = await admin.request(
+        method,
+        f"/api/kbs/{kb}{suffix.format(document=document)}",
+        content=body,
+        headers={**AJAX, "Content-Type": content_type},
+    )
+
+    assert response.status_code in (404, 405, 422)
+    await assert_nothing_created(engine, upload_dir)
+
+
+async def test_AC_005_a_trailing_slash_is_not_the_upload_route(
+    engine: AsyncEngine, admin: httpx.AsyncClient, kb: uuid.UUID, upload_dir: Path
+) -> None:
+    body, content_type = multipart("note.txt", TEXT, "text/plain")
+
+    response = await admin.post(
+        f"/api/kbs/{kb}/documents/", content=body, headers={**AJAX, "Content-Type": content_type}
+    )
+
+    assert response.status_code != 202
+    assert response.status_code in (307, 308, 404, 405, 422)
+    await assert_nothing_created(engine, upload_dir)
+
+
+@pytest.mark.parametrize("announced", [b"\xb2", b"\xb2\xb2", b"1\xb2", b"-5", b"+5", b"1.5", b"abc", b"", b" "])
+async def test_AC_008_a_content_length_that_is_not_a_number_is_ignored_not_a_500(
+    admin: httpx.AsyncClient, kb: uuid.UUID, announced: bytes
+) -> None:
+    """Python's str.isdigit() is true for characters like the superscript two, and int() then fails: only ASCII
+    digits count as a size announced by the request."""
+    body, content_type = multipart("note.txt", TEXT, "text/plain")
+
+    response = await admin.post(
+        f"/api/kbs/{kb}/documents",
+        content=body,
+        headers=[
+            (b"x-requested-with", b"XMLHttpRequest"),
+            (b"content-type", content_type.encode()),
+            (b"content-length", announced),
+        ],
+    )
+
+    assert response.status_code in (202, 400, 422), response.text
+
+
 # AC-006: type, extension and signature must agree -------------------------------------------------------------------
 
 BAD_FILES = [
