@@ -5,12 +5,22 @@ server {
     server_name _;
     client_max_body_size 1m;
 
+    # Upload of a document: the body limit is the file limit plus 1 MB of multipart framing (UPLOAD_BODY_LIMIT_MB,
+    # computed by entrypoint-tls.sh from MAX_UPLOAD_SIZE_MB). Above it Nginx answers with the JSON error body of the
+    # backend (file_too_large); the rest of /api/ keeps the limit of the server block.
+    location ~ ^/api/kbs/[^/]+/documents$ {
+        client_max_body_size ${UPLOAD_BODY_LIMIT_MB}m;
+        error_page 413 @file_too_large;
+        include /etc/nginx/snippets/api-proxy.conf;
+    }
+
+    location @file_too_large {
+        default_type application/json;
+        return 413 '{"error":{"code":"file_too_large","message":"The file is too large"}}';
+    }
+
     location /api/ {
-        proxy_pass http://backend:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        # Always "http" here, whatever the client sent: the backend sets the cookie Secure from it
-        proxy_set_header X-Forwarded-Proto $scheme;
+        include /etc/nginx/snippets/api-proxy.conf;
     }
 
     location / {

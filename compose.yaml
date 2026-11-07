@@ -35,6 +35,11 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-480}
+      # Fixed here: the folder is the `uploads` volume, so .env cannot point it elsewhere
+      UPLOAD_DIR: /data/uploads
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -52,6 +57,9 @@ services:
       dockerfile: nginx/Dockerfile
     ports:
       - "${HTTP_PORT:-80}:80"
+    environment:
+      # Nginx lets the upload route take a body of this limit plus 1 MB (see nginx/entrypoint-tls.sh)
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
     volumes:
       - ./nginx/certs:/etc/nginx/certs:ro
     depends_on:
@@ -65,3 +73,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:
