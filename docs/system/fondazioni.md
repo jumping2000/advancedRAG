@@ -1,7 +1,7 @@
 # Area: fondazioni (stack, access, users, knowledge bases)
 
 - Last aligned: 2026-11-07
-- Linked specs: SPEC-2026-11-06-fase-1-fondazioni
+- Linked specs: SPEC-2026-11-06-fase-1-fondazioni, SPEC-2026-11-07-fase-2-ingestion
 
 ## Current behaviour
 The platform runs as a Docker Compose stack of five services: `nginx` (the only one with a host port, `HTTP_PORT`,
@@ -111,8 +111,9 @@ KB goes through `KnowledgeBaseRepository`, which for any role other than the exa
 user's id in the same SQL query: a user lists and opens only the assigned KBs, and a KB that is not assigned, does not
 exist or has an id that is not a UUID gets the same 404 `kb_not_found`. The UI (Italian or English: browser language
 first, then the language saved in the profile) has the login page, the KB list as home page ("Le tue knowledge base"
-for a user, "Tutte le knowledge base" for the admin) with the opened KB under `/kbs/{id}`, and for the admin the Users
-and Knowledge Base pages; a `user` sees neither admin menu. The member picker of the Knowledge Base page offers only
+for a user, "Tutte le knowledge base" for the admin) with the opened KB under `/kbs/{id}`, and for the admin the Users,
+Knowledge Base and (phase 2, T-07) Documents pages; a `user` sees none of the admin menus. The Documents page is described in
+[ingestion.md](ingestion.md). The member picker of the Knowledge Base page offers only
 active users; an inactive user already assigned stays listed, marked as deactivated.
 
 ## Interfaces
@@ -153,8 +154,9 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   unknown path and 405 `method_not_allowed` ("Method Not Allowed"); other HTTP errors `http_error`.
 - `UserOut` = `{"id", "username", "role", "is_active", "language"}` (never a password or hash);
   `KnowledgeBaseOut` = `{"id", "name", "description", "created_at"}`. Extra fields in a body are ignored.
-- Frontend routes: `/login`, `/` (own KB list), `/kbs/:kbId`, `/admin/users`, `/admin/kbs` (admin only; a `user`
-  is sent to `/`, no session to `/login`).
+- Frontend routes: `/login`, `/` (own KB list), `/kbs/:kbId`, `/admin/users`, `/admin/kbs`, `/admin/documents` (phase 2,
+  T-07; admin only, the three of them: a `user` is sent to `/`, no session to `/login`). The header menu of the admin lists
+  Users, Knowledge Base and Documents; the client has `api.upload` for the multipart upload of a document.
 - Configuration (`.env.example`): `POSTGRES_PASSWORD` (any character, set on the URL object, never pasted into
   `DATABASE_URL`), `HTTP_PORT`, `HTTPS_PORT` (with `compose.tls.yaml`), `DATABASE_URL`, `REDIS_URL` (set by
   `compose.yaml`), `OLLAMA_BASE_URL`, `DOCLING_BASE_URL`, `HEALTH_CHECK_TIMEOUT_SECONDS` (2), `ADMIN_USERNAME`,
@@ -395,6 +397,7 @@ erDiagram
   `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for a Chromium already on the machine).
 
 ### Known limits of the ingestion (phase 2, T-05 and T-06)
+The complete list, with the notes for phase 3, is in [ingestion.md](ingestion.md).
 - A garbage file for which docling-serve answers 500 is repeated 3 times and ends `docling_error`, not `parse_failed`
   (the worker cannot tell it from a server that is down).
 - Merged table cells repeat their text in every row they span, and the " | " separators count toward
@@ -436,9 +439,10 @@ erDiagram
 - Frontend: [App.tsx](../../frontend/src/app/App.tsx),
   [KnowledgeBasesPage.tsx](../../frontend/src/pages/KnowledgeBasesPage.tsx),
   [KnowledgeBaseAdminPage.tsx](../../frontend/src/pages/admin/KnowledgeBaseAdminPage.tsx),
-  [UsersPage.tsx](../../frontend/src/pages/admin/UsersPage.tsx).
+  [UsersPage.tsx](../../frontend/src/pages/admin/UsersPage.tsx),
+  [DocumentsPage.tsx](../../frontend/src/pages/admin/DocumentsPage.tsx) (phase 2, T-07).
 - Tests: `backend/tests/` (`test_isolation.py`, `test_knowledge_bases.py`, `test_users.py`, `test_auth.py`, ...),
-  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`), `frontend/src/**/*.test.tsx`;
+  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`, `test_documents_ui.py`), `frontend/src/**/*.test.tsx`;
   phase 2, T-05: `test_docling.py`, `test_retry.py`, `test_pipeline_errors.py`, `test_retry_route.py`,
   `test_logging_privacy.py`; phase 2, T-06: `test_cleanup.py`, `test_document_delete.py`, `test_worker_recovery.py`; and the opt-in `tests/live/test_live_services.py` (`LIVE_SERVICES=1`, marker `live`, never in
   the default run or in CI: run it once by hand against your real Docling and Ollama).
