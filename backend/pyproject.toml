@@ -44,5 +44,8 @@ packages = ["app"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-markers = ["e2e: tests that start the full docker compose stack"]
-addopts = "-m 'not e2e'"
+markers = [
+    "e2e: tests that start the full docker compose stack",
+    "live: smoke tests of the real Docling and Ollama (need LIVE_SERVICES=1, never run by default)",
+]
+addopts = "-m 'not e2e and not live'"
