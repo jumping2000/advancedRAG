@@ -515,3 +515,62 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-022: an assignment error is shown in th
   expect(await screen.findByRole("alert")).toHaveTextContent("Utente non trovato.");
   expect(screen.queryByText("luigi", { selector: "li *, li" })).not.toBeInTheDocument();
 });
+
+// Owner's decisions after the review --------------------------------------------------------------------------------
+
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-023: the admin's home page is titled with all the knowledge bases", async () => {
+  browserLanguages(["it-IT"]);
+  adminRoutes([manuali, procedure]);
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { name: "Tutte le knowledge base" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Le tue knowledge base" })).not.toBeInTheDocument();
+  const list = await screen.findByRole("list", { name: "Tutte le knowledge base" });
+  expect(
+    within(list)
+      .getAllByRole("link")
+      .map((link) => link.textContent),
+  ).toEqual(["Manuali", "Procedure"]);
+});
+
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-023: in English the admin's home page is titled All knowledge bases", async () => {
+  browserLanguages(["en-US"]);
+  adminRoutes([manuali]);
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { name: "All knowledge bases" })).toBeInTheDocument();
+});
+
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-022: the picker offers only active users; an inactive member stays listed as deactivated", async () => {
+  browserLanguages(["it-IT"]);
+  const peach: UserOut = { ...mario, id: "8a1c7f9e-0000-4000-8000-0000000000d4", username: "peach", is_active: false };
+  const toad: UserOut = { ...mario, id: "8a1c7f9e-0000-4000-8000-0000000000e5", username: "toad", is_active: false };
+  const { routes } = memberRoutes([mario, toad]);
+  routes["GET /api/admin/users"] = () => json(200, [anna, mario, luigi, peach, toad]);
+  adminRoutes([manuali], routes);
+  await openAdminPage();
+
+  const members = await openMembers();
+  const items = within(members).getAllByRole("listitem");
+  expect(items.map((item) => item.firstChild?.textContent)).toEqual(["mario", "toad"]);
+  expect(within(items[1]).getByText("Disattivato")).toBeInTheDocument();
+  expect(within(items[0]).queryByText("Disattivato")).not.toBeInTheDocument();
+  const picker = screen.getByLabelText("Utente da assegnare");
+  expect(
+    within(picker)
+      .getAllByRole("option")
+      .map((option) => option.textContent),
+  ).toEqual(["Scegli un utente", "anna", "luigi"]);
+});
+
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-022: in English an inactive member is marked Deactivated", async () => {
+  browserLanguages(["en-US"]);
+  const toad: UserOut = { ...mario, id: "8a1c7f9e-0000-4000-8000-0000000000e5", username: "toad", is_active: false };
+  const { routes } = memberRoutes([toad]);
+  adminRoutes([manuali], routes);
+  await openAdminPage();
+
+  const members = await openMembers({ members: "Assigned users", title: "Users assigned to Manuali" });
+
+  expect(within(within(members).getByRole("listitem")).getByText("Deactivated")).toBeInTheDocument();
+});
