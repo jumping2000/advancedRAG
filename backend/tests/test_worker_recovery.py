@@ -21,6 +21,8 @@ import asyncio
 import logging
 import os
 import re
+import subprocess
+import sys
 import threading
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -38,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from app import worker
 from app.config import Settings
+from app.documents import queue
 from app.documents.repository import DocumentRepository
 from app.ingestion import cleanup
 from app.ingestion.chunker import ChunkDraft
@@ -47,9 +50,9 @@ from app.ingestion.persist import persist_chunks
 from app.ingestion.pipeline import process_document
 from app.ingestion.profile import ensure_profile
 from app.run import migrate
-from tests.conftest import TEST_REDIS_URL, make_settings
+from tests.conftest import TEST_DATABASE_URL, TEST_REDIS_URL, make_settings
 from tests.fakes.http_server import closed_port_url
-from tests.fakes.services import fake_ollama
+from tests.fakes.services import fake_docling, fake_document_file, fake_ollama
 
 DIMENSIONS = 8
 NOW = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
@@ -119,8 +122,10 @@ async def add_document(
     *,
     changed: timedelta = timedelta(0),
     original: bool = True,
+    fmt: str = "txt",
+    content: bytes = TEXT,
 ) -> uuid.UUID:
-    """A TXT document in a KB of its own, in the given status, last changed `changed` before NOW."""
+    """A document in a KB of its own, in the given status, last changed `changed` before NOW (a TXT by default)."""
     document_id = uuid.uuid4()
     has_reason = status in ("FAILED", "UNSUPPORTED")
     async with engine.begin() as connection:
@@ -131,13 +136,14 @@ async def add_document(
             text(
                 "insert into documents (id, kb_id, filename, format, size_bytes, checksum, status,"
                 " status_reason_code, status_reason_message, chunk_count, created_at, updated_at)"
-                " values (:id, :kb_id, 'nota.txt', 'txt', :size, :checksum, :status, :code, :message, :chunks,"
+                " values (:id, :kb_id, 'nota.txt', :format, :size, :checksum, :status, :code, :message, :chunks,"
                 " :changed_at, :changed_at)"
             ),
             {
                 "id": document_id,
                 "kb_id": kb_id,
-                "size": len(TEXT),
+                "format": fmt,
+                "size": len(content),
                 "checksum": document_id.hex,
                 "status": status,
                 "code": "docling_unreachable" if has_reason else None,
@@ -147,14 +153,14 @@ async def add_document(
             },
         )
     if original:
-        put_original(upload_dir, document_id, NOW - changed)
+        put_original(upload_dir, document_id, NOW - changed, content)
     return document_id
 
 
-def put_original(upload_dir: Path, document_id: uuid.UUID, written: datetime) -> Path:
+def put_original(upload_dir: Path, document_id: uuid.UUID, written: datetime, content: bytes = TEXT) -> Path:
     upload_dir.mkdir(parents=True, exist_ok=True)
     path = upload_dir / str(document_id)
-    path.write_bytes(TEXT)
+    path.write_bytes(content)
     os.utime(path, (written.timestamp(), written.timestamp()))
     return path
 
@@ -524,6 +530,75 @@ async def test_a_failing_run_of_the_hourly_cleanup_does_not_end_the_loop(
     assert "RuntimeError" in messages
     assert SECRET not in messages
     assert all(moment.tzinfo is not None for moment in calls)  # the loop passes the current time (UTC)
+
+
+# The same timeout, enforced by RQ itself ------------------------------------------------------------------------
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+RQ_WORKER = (
+    "import sys; from redis import Redis; from rq import Queue, SimpleWorker; "
+    "connection = Redis.from_url(sys.argv[1]); "
+    "SimpleWorker([Queue('ingestion', connection=connection)], connection=connection).work(burst=True)"
+)
+MANUAL = [
+    ("section_header", "Introduzione", 1, 1),
+    ("text", "Questo manuale spiega come usare il prodotto in ogni sua parte.", 1),
+]
+
+
+async def test_a_job_stopped_by_the_real_rq_timeout_while_waiting_for_docling_ends_failed_not_processing(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    """RQ's SimpleWorker enforces the timeout with SIGALRM, whose exception is raised in the main thread while the
+    event loop of the job is idle in `asyncio.run`: here a real worker (burst, in a subprocess) runs a real job queued
+    with a 5 second timeout, while the fake Docling holds the request. The document must not stay PROCESSING."""
+    with fake_ollama(dimensions=DIMENSIONS) as ollama, fake_docling(delay_seconds=300.0) as docling:
+        document_id = await add_document(engine, tmp_path, "QUEUED", fmt="pdf", content=fake_document_file(MANUAL))
+        connection = SyncRedis.from_url(TEST_REDIS_URL)
+        try:
+            Queue("ingestion", connection=connection).enqueue(
+                queue.PROCESS_DOCUMENT_JOB, str(document_id), job_timeout=5, result_ttl=0
+            )
+        finally:
+            connection.close()
+        environment = {
+            **os.environ,
+            "DATABASE_URL": TEST_DATABASE_URL,
+            "REDIS_URL": TEST_REDIS_URL,
+            "OLLAMA_BASE_URL": ollama.url,
+            "DOCLING_BASE_URL": docling.url,
+            "UPLOAD_DIR": str(tmp_path),
+            "EMBEDDING_MODEL": "test-model",
+            "EMBEDDING_DIMENSIONS": str(DIMENSIONS),
+        }
+        worker_process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            RQ_WORKER,
+            TEST_REDIS_URL,
+            cwd=BACKEND_DIR,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            _, errors = await asyncio.wait_for(worker_process.communicate(), 90)
+        except TimeoutError:
+            worker_process.kill()
+            raise
+        finally:
+            docling.release.set()
+
+    assert len(docling.requests) == 1  # the job did reach Docling and was stopped there
+    assert worker_process.returncode == 0, (errors or b"").decode(errors="replace")[-2000:]
+    assert await row_of(engine, document_id) == (
+        "FAILED",
+        "unexpected_error",
+        "The processing time limit was exceeded",
+        0,
+    )
+    assert await chunks_of(engine, document_id) == 0
+    assert (tmp_path / str(document_id)).is_file()  # kept: the admin can retry
 
 
 # a job that exceeds the timeout of the queue -------------------------------------------------------------------------

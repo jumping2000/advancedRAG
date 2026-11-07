@@ -2,11 +2,13 @@
 """The originals do not outlive the rules: AC-034 and AC-035 (REQ-017).
 
 `cleanup_originals(settings, now)` deletes (a) the original of a FAILED document once more than
-`FAILED_ORIGINAL_RETENTION_DAYS` (default 7) days have passed since it failed (`documents.updated_at`, set by the
-FAILED transition), and (b) the files of `UPLOAD_DIR` that have no document and were last written more than one hour
-ago, `.part` files included. It deletes files only: no document, no chunk and no status changes, and the original of a
-QUEUED or PROCESSING document is never deleted, however old. Time is injected through `now` and the file times are set
-with `os.utime`: no test waits for real.
+`FAILED_ORIGINAL_RETENTION_DAYS` (default 7, at most 3650) days have passed since it failed (`documents.updated_at`,
+set by the FAILED transition), checked again just before each deletion; (b) the files named exactly `{uuid}` or
+`{uuid}.part` (canonical lower case) in `UPLOAD_DIR` that have no document and were last written more than one hour ago
+(any other name is left alone); and (c) a surviving original of a READY or UNSUPPORTED document, whatever its age
+(REQ-017: those originals must not exist). It deletes files only: no document, no chunk and no status changes, and the
+original of a QUEUED or PROCESSING document is never deleted, however old. Time is injected through `now` and the file
+times are set with `os.utime`: no test waits for real.
 
 Real PostgreSQL of compose.test.yaml, the fake Ollama on a local socket (never the real service), fresh state per test,
 an upload folder inside pytest's tmp_path.
@@ -24,9 +26,11 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.config import Settings
+from app.documents.repository import DocumentRepository
+from app.documents.storage import UploadStorage
 from app.ingestion.cleanup import CleanupReport, cleanup_originals
 from app.ingestion.pipeline import process_document
 from app.run import migrate
@@ -303,17 +307,177 @@ async def test_AC_035_a_file_just_under_one_hour_is_kept_and_one_just_over_is_de
     assert not over.exists()
 
 
-async def test_AC_035_a_file_whose_name_is_not_a_document_id_is_a_file_without_a_document(
+async def test_AC_035_a_file_whose_name_is_not_exactly_a_document_id_or_an_id_with_part_is_left_alone(
     engine: AsyncEngine, tmp_path: Path
 ) -> None:
-    stray = put_file(tmp_path, "left-by-hand.bin", timedelta(hours=3))
+    """The sweep deletes only what the upload creates: `{uuid}` and `{uuid}.part`, in canonical lower case."""
+    identifier = str(uuid.uuid4())
+    names = [
+        "left-by-hand.bin",
+        ".hidden",
+        identifier.upper(),
+        f"{identifier}.txt",
+        f"{identifier}.PART",
+        f"{identifier}.part.bak",
+        identifier.replace("-", ""),
+        f"{{{identifier}}}",
+    ]
+    strays = [put_file(tmp_path, name, timedelta(hours=3)) for name in names]
     folder = tmp_path / "subfolder"
     folder.mkdir()
 
-    await cleanup_originals(settings_for(tmp_path), NOW)
+    report = await cleanup_originals(settings_for(tmp_path), NOW)
 
-    assert not stray.exists()
+    assert all(path.is_file() for path in strays), [path.name for path in strays if not path.exists()]
     assert folder.is_dir()
+    assert report == CleanupReport(expired_originals=0, orphan_files=0)
+
+
+async def test_AC_035_a_canonical_id_and_a_part_file_are_still_swept_next_to_files_that_are_left_alone(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    kept = put_file(tmp_path, "left-by-hand.bin", timedelta(hours=3))
+    orphan = put_file(tmp_path, str(uuid.uuid4()), timedelta(hours=3))
+    part = put_file(tmp_path, f"{uuid.uuid4()}.part", timedelta(hours=3))
+
+    report = await cleanup_originals(settings_for(tmp_path), NOW)
+
+    assert kept.is_file()
+    assert not orphan.exists()
+    assert not part.exists()
+    assert report.orphan_files == 2
+
+
+# REQ-017: a READY or UNSUPPORTED document has no original ---------------------------------------------------------
+
+
+async def test_AC_034_a_surviving_original_of_a_ready_or_unsupported_document_is_deleted_whatever_its_age(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    """The crash window between the status mark and the removal of the original."""
+    ready = await add_document(engine, tmp_path, "READY", changed=timedelta(minutes=5))
+    unsupported = await add_document(engine, tmp_path, "UNSUPPORTED", changed=timedelta(days=2))
+    queued = await add_document(engine, tmp_path, "QUEUED", changed=timedelta(minutes=5))
+    processing = await add_document(engine, tmp_path, "PROCESSING", changed=timedelta(minutes=5))
+    failed = await add_document(engine, tmp_path, "FAILED", changed=timedelta(minutes=5))
+    before = await snapshot(engine)
+
+    report = await cleanup_originals(settings_for(tmp_path), NOW)
+
+    assert not (tmp_path / str(ready)).exists()
+    assert not (tmp_path / str(unsupported)).exists()
+    for document_id in (queued, processing, failed):
+        assert (tmp_path / str(document_id)).is_file()
+    assert report == CleanupReport(expired_originals=2, orphan_files=0)
+    assert await snapshot(engine) == before
+
+
+# A retry at the boundary does not lose its original -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("change", ["requeued", "failed_again"])
+async def test_AC_034_a_document_that_changed_after_the_listing_keeps_its_original(
+    engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """The admin presses Retry (or the document fails again) between the moment the expired documents are listed and
+    the moment their originals are deleted: the original is checked again and stays."""
+    racing = await add_document(engine, tmp_path, "FAILED", changed=timedelta(days=8))
+    expired = await add_document(engine, tmp_path, "FAILED", changed=timedelta(days=8))
+    real_ids_in_status = DocumentRepository.ids_in_status
+
+    async def listed_then_changed(self: DocumentRepository, status: str, **kwargs: Any) -> list[uuid.UUID]:
+        ids = await real_ids_in_status(self, status, **kwargs)
+        if status == "FAILED" and kwargs.get("changed_before") is not None:
+            assert racing in ids and expired in ids
+            statement = (
+                "update documents set status = 'QUEUED', status_reason_code = null, status_reason_message = null,"
+                " updated_at = :moment where id = :id"
+                if change == "requeued"
+                else "update documents set updated_at = :moment where id = :id"
+            )
+            async with engine.begin() as connection:
+                await connection.execute(text(statement), {"id": racing, "moment": NOW - timedelta(days=1)})
+        return ids
+
+    monkeypatch.setattr(DocumentRepository, "ids_in_status", listed_then_changed)
+
+    report = await cleanup_originals(settings_for(tmp_path), NOW)
+
+    assert (tmp_path / str(racing)).is_file()
+    assert not (tmp_path / str(expired)).exists()
+    assert report == CleanupReport(expired_originals=1, orphan_files=0)
+    assert (await status_of(engine, racing))[0] == ("QUEUED" if change == "requeued" else "FAILED")
+
+
+# UploadStorage.orphans: a file that vanishes while the folder is listed ---------------------------------------------
+
+
+def test_AC_035_a_file_removed_while_the_folder_is_listed_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = put_file(tmp_path, str(uuid.uuid4()), timedelta(hours=2))
+    vanishing = put_file(tmp_path, str(uuid.uuid4()), timedelta(hours=2))
+    real_is_file = Path.is_file
+
+    def is_file_then_gone(self: Path) -> bool:
+        found = real_is_file(self)
+        if self == vanishing:
+            self.unlink()  # renamed (the upload) or removed (a delete) right after the check
+        return found
+
+    monkeypatch.setattr(Path, "is_file", is_file_then_gone)
+
+    found = UploadStorage(tmp_path).orphans(HOUR, NOW)
+
+    assert found == [old]
+
+
+# Many files and a bounded retention ---------------------------------------------------------------------------------
+
+
+def put_many(folder: Path, count: int, age: timedelta) -> list[Path]:
+    folder.mkdir(parents=True, exist_ok=True)
+    moment = (NOW - age).timestamp()
+    paths = []
+    for _ in range(count):
+        path = folder / str(uuid.uuid4())
+        path.write_bytes(b"")
+        os.utime(path, (moment, moment))
+        paths.append(path)
+    return paths
+
+
+async def test_AC_035_tens_of_thousands_of_files_do_not_hit_the_limit_of_query_arguments(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    """asyncpg refuses more than 32767 arguments in one statement: the ids are looked up in batches."""
+    orphans = put_many(tmp_path, 33_000, timedelta(hours=2))
+    document_id = await add_document(engine, tmp_path, "QUEUED", changed=timedelta(hours=5))
+
+    report = await cleanup_originals(settings_for(tmp_path), NOW)
+
+    assert report == CleanupReport(expired_originals=0, orphan_files=33_000)
+    assert not any(path.exists() for path in orphans)
+    assert (tmp_path / str(document_id)).is_file()
+
+
+async def test_AC_035_the_batched_lookup_finds_the_documents_among_many_ids(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
+    document_id = await add_document(engine, tmp_path, "QUEUED")
+    ids = [uuid.uuid4() for _ in range(40_000)]
+    ids[25_000] = document_id
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        found = await DocumentRepository(session).statuses(ids)
+
+    assert found == {document_id: "QUEUED"}
+
+
+def test_AC_034_the_retention_is_bounded_so_that_it_cannot_overflow_a_date(tmp_path: Path) -> None:
+    assert settings_for(tmp_path, failed_original_retention_days=3650).failed_original_retention_days == 3650
+    for days in (3651, 10**12):
+        with pytest.raises(ValidationError):
+            settings_for(tmp_path, failed_original_retention_days=days)
 
 
 async def test_AC_035_an_old_file_that_has_a_document_is_not_an_orphan(engine: AsyncEngine, tmp_path: Path) -> None:
