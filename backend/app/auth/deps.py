@@ -15,29 +15,34 @@ from app.db.session import get_session
 
 SESSION_COOKIE = "rag_session"
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# The only route that takes a multipart body (the file upload of a document) and the header it must carry. The route
+# path is the one declared by the documents router: this FastAPI keeps the "/api" prefix of main.py out of it.
+UPLOAD_ROUTE_PATH = "/kbs/{kb_id}/documents"
+UPLOAD_HEADER = ("x-requested-with", "XMLHttpRequest")
 
 
 class ApiError(Exception):
     """An error answered with {"error": {"code", "message"}}; the UI translates the code."""
 
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(self, status_code: int, code: str, message: str, extra: dict[str, object] | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.extra = extra  # more fields for the `error` object, e.g. the document a duplicate upload collides with
 
 
 def not_authenticated() -> ApiError:
     return ApiError(401, "not_authenticated", "Authentication required")
 
 
-def error_response(status_code: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse({"error": {"code": code, "message": message}}, status_code=status_code)
+def error_response(status_code: int, code: str, message: str, extra: dict[str, object] | None = None) -> JSONResponse:
+    return JSONResponse({"error": {"code": code, "message": message, **(extra or {})}}, status_code=status_code)
 
 
 async def api_error_handler(_: Request, error: Exception) -> JSONResponse:
     assert isinstance(error, ApiError)
-    return error_response(error.status_code, error.code, error.message)
+    return error_response(error.status_code, error.code, error.message, error.extra)
 
 
 async def validation_error_handler(_: Request, __: Exception) -> JSONResponse:
@@ -59,13 +64,28 @@ def get_session_store(request: Request) -> SessionStore:
 
 
 async def require_json(request: Request) -> None:
-    """Only JSON bodies (CSRF): a form or text/plain request from another site gets 422 before doing anything."""
+    """Only JSON bodies (CSRF): a form or text/plain request from another site gets 422 before doing anything.
+
+    The one exception is the document upload (POST on UPLOAD_ROUTE_PATH): it takes multipart/form-data, but only with
+    the X-Requested-With header, which a form of another site cannot send."""
     content_type = request.headers.get("content-type")
     if request.method in UNSAFE_METHODS and content_type is not None:
         message = Message()
         message["content-type"] = content_type
-        if message.get_content_type() != "application/json":
-            raise RequestValidationError([{"type": "content_type", "loc": ("header", "content-type")}])
+        media_type = message.get_content_type()
+        if media_type == "application/json":
+            return
+        if media_type == "multipart/form-data" and _is_upload(request):
+            header, value = UPLOAD_HEADER
+            if request.headers.get(header) == value:
+                return
+            raise RequestValidationError([{"type": "missing", "loc": ("header", header)}])
+        raise RequestValidationError([{"type": "content_type", "loc": ("header", "content-type")}])
+
+
+def _is_upload(request: Request) -> bool:
+    route = request.scope.get("route")
+    return request.method == "POST" and getattr(route, "path", None) == UPLOAD_ROUTE_PATH
 
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
