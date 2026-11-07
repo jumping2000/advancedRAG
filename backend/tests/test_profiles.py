@@ -244,7 +244,8 @@ def start_backend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[C
 
 
 async def stored_profiles() -> list[tuple[str, int]]:
-    engine = create_async_engine(make_settings().sqlalchemy_url)
+    # Not make_settings(): the environment of the started backend (a bad CHUNK_MIN_WORDS) would fail it.
+    engine = create_async_engine(TEST_DATABASE_URL)
     try:
         rows = await profile_rows(engine)
         assert len(await hnsw_indexes(engine)) == len(rows)
