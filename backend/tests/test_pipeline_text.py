@@ -8,8 +8,10 @@ a missing original): the document becomes FAILED with a reason, no chunk of it e
 job that finds the document deleted or not QUEUED does nothing; and the RQ entry point `process_document_job`, run by
 a real RQ worker from the real queue.
 
-Interim rules until T-05, so that no document stays in an unexplained state: a format that needs Docling is FAILED
-`unexpected_error`, and a text with no chunk is FAILED `parse_failed` (T-05 makes them a Docling call and UNSUPPORTED).
+T-05 replaced the interim rules of T-04 (a format that needs Docling was FAILED `unexpected_error`, a text with no chunk
+was FAILED `parse_failed`, a failed step was never repeated): the formats go to Docling, a text with too little in it is
+UNSUPPORTED `no_text_extracted` and its original is deleted at once, and a temporary error repeats the step up to
+INGESTION_MAX_ATTEMPTS attempts.
 """
 
 from __future__ import annotations
@@ -270,16 +272,20 @@ async def state_of_or_none(engine: AsyncEngine, document_id: uuid.UUID) -> dict[
     return None if row is None else dict(row._mapping)
 
 
-@pytest.mark.parametrize("ollama_modes", [{}, {"fail_status": 500}], ids=["ollama answers", "ollama fails"])
+@pytest.mark.parametrize(
+    ("ollama_modes", "requests"),
+    [({}, 1), ({"fail_status": 500}, 3)],  # T-05: a failing Ollama is asked 3 times (INGESTION_MAX_ATTEMPTS)
+    ids=["ollama answers", "ollama fails"],
+)
 async def test_AC_015_a_document_deleted_while_the_job_waits_for_ollama_is_not_written_back(
-    engine: AsyncEngine, tmp_path: Path, ollama_modes: dict[str, Any]
+    engine: AsyncEngine, tmp_path: Path, ollama_modes: dict[str, Any], requests: int
 ) -> None:
     """Whether the vectors arrive (the save finds no document) or the call fails (the FAILED mark finds none): no
     FAILED row, no chunk, no document that comes back, and the original is left where it is."""
     with fake_ollama(dimensions=DIMENSIONS, delay_seconds=0.5, **ollama_modes) as ollama:
         document_id = await delete_while_processing(engine, tmp_path, ollama.url)
 
-    assert len(ollama.requests) == 1
+    assert len(ollama.requests) == requests
     assert await state_of_or_none(engine, document_id) is None
     async with engine.connect() as connection:
         assert await connection.scalar(text("select count(*) from documents")) == 0
@@ -393,34 +399,40 @@ async def test_AC_033_a_text_that_is_not_valid_utf8_is_failed_parse_failed_and_t
 
 @pytest.mark.parametrize("fmt", ["txt", "md"])
 @pytest.mark.parametrize("content", [b"   \n\n \t \n", b"\x00\x01\x02 \x0b\x0c"])
-async def test_AC_015_a_text_without_any_chunk_is_failed_parse_failed_for_now(
+async def test_AC_015_a_text_without_any_chunk_is_unsupported_and_its_original_is_deleted(
     engine: AsyncEngine, tmp_path: Path, fmt: str, content: bytes
 ) -> None:
-    """Interim (until T-05, which makes it UNSUPPORTED): nothing could be read, and the admin is told so."""
+    """T-05 replaced the interim FAILED `parse_failed` (REQ-009): nothing to read is UNSUPPORTED `no_text_extracted`."""
     with fake_ollama(dimensions=DIMENSIONS) as ollama:
         settings = settings_for(tmp_path, ollama.url)
         document_id = await add_document(engine, tmp_path, content, fmt=fmt)
 
         await process_document(document_id, settings)
 
-    state = await assert_failed_without_chunks(engine, tmp_path, document_id, "parse_failed")
-    assert state["status_reason_message"] == "No text could be read"
+    state = await state_of(engine, document_id)
+    assert state["status"] == "UNSUPPORTED"
+    assert state["status_reason_code"] == "no_text_extracted"
+    assert state["status_reason_message"] == "No text could be extracted from the document"
+    assert state["chunk_count"] == 0
+    assert await chunks_of(engine, document_id) == []
+    assert files_in(tmp_path) == []
     assert ollama.requests == []
 
 
 @pytest.mark.parametrize("fmt", ["pdf", "docx", "pptx", "xlsx"])
-async def test_AC_015_a_format_that_needs_docling_is_failed_unexpected_error_for_now(
+async def test_AC_015_a_format_that_needs_docling_is_failed_docling_unreachable_when_docling_is_down(
     engine: AsyncEngine, tmp_path: Path, fmt: str
 ) -> None:
-    """Interim (until T-05, which sends these formats to Docling): the document gets a state and a reason."""
+    """T-05 replaced the interim FAILED `unexpected_error`: these formats are sent to Docling (settings_for points
+    DOCLING_BASE_URL at a closed port), the step is repeated and the document ends FAILED with the original kept."""
     with fake_ollama(dimensions=DIMENSIONS) as ollama:
         settings = settings_for(tmp_path, ollama.url)
         document_id = await add_document(engine, tmp_path, b"%PDF-1.7 not read", fmt=fmt)
 
-        await process_document(document_id, settings)
+        await process_document(document_id, settings, sleep=no_sleep)
 
-    state = await assert_failed_without_chunks(engine, tmp_path, document_id, "unexpected_error")
-    assert state["status_reason_message"] == "Docling parsing is not available yet"
+    state = await assert_failed_without_chunks(engine, tmp_path, document_id, "docling_unreachable")
+    assert state["status_reason_message"] == "The document parsing service could not be reached"
     assert ollama.requests == []
 
 
@@ -447,7 +459,8 @@ async def test_AC_015_an_embedding_error_on_the_second_group_leaves_no_chunk_of_
 
         await process_document(document_id, settings, sleep=no_sleep)
 
-    assert len(ollama.requests) == 2
+    # The first group, then the second one with its 3 attempts (T-05: a temporary error repeats the step)
+    assert len(ollama.requests) == 1 + 3
     await assert_failed_without_chunks(engine, tmp_path, document_id, "embedding_error")
 
 

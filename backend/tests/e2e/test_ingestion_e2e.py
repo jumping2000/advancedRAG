@@ -129,6 +129,13 @@ WORKER_SETTINGS = {
     "DOCLING_BASE_URL",
     "UPLOAD_DIR",
 }
+WORKER_ONLY_SETTINGS = (
+    "DOCLING_API_KEY",
+    "DOCLING_TIMEOUT_SECONDS",
+    "INGESTION_MAX_ATTEMPTS",
+    "INGESTION_RETRY_BACKOFF_SECONDS",
+    "MIN_EXTRACTED_CHARS",
+)
 BACKEND_ONLY_SETTINGS = {
     "ADMIN_USERNAME",
     "ADMIN_PASSWORD",
@@ -152,11 +159,19 @@ def test_AC_001_the_worker_gets_only_the_settings_it_needs_and_none_of_the_admin
         worker_environment
     )
     assert {"CHUNK_TARGET_WORDS", "CHUNK_MIN_WORDS", "CHUNK_MAX_WORDS", "CHUNK_OVERLAP_PERCENT"} <= worker_environment
-    allowed = WORKER_SETTINGS | {name for name in worker_environment if name.startswith(("EMBEDDING_", "CHUNK_"))}
+    # Phase 2, T-05: the worker also gets the settings of Docling, of the attempts and of the minimum text
+    assert set(WORKER_ONLY_SETTINGS) <= worker_environment
+    allowed = (
+        WORKER_SETTINGS
+        | set(WORKER_ONLY_SETTINGS)
+        | {name for name in worker_environment if name.startswith(("EMBEDDING_", "CHUNK_"))}
+    )
     assert worker_environment == allowed
-    # The backend keeps all of them, and shares every setting of the worker.
+    # The backend keeps all of them, and shares every setting of the worker, except the ones only the worker needs
+    # (the backend never calls Docling to convert a file, nor repeats a step: it does not get the Docling key).
     assert BACKEND_ONLY_SETTINGS <= backend_environment
-    assert worker_environment <= backend_environment
+    assert worker_environment - set(WORKER_ONLY_SETTINGS) <= backend_environment
+    assert set(WORKER_ONLY_SETTINGS) & backend_environment == set()
 
 
 def test_AC_001_backend_and_worker_run_one_image_built_once(env_file: Path) -> None:
