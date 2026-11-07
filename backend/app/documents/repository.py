@@ -6,11 +6,11 @@ routes check the KB first with KnowledgeBaseRepository.get_for (AGENTS.md: acces
 
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Document
+from app.db.models import Chunk, Document
 
 CREATE_ATTEMPTS = 3
 
@@ -73,10 +73,48 @@ class DocumentRepository:
         return deleted is not None
 
     async def claim(self, document_id: uuid.UUID) -> Document | None:
-        return None
+        """QUEUED -> PROCESSING in one statement, for the worker: the document, or None when there is no QUEUED
+        document with this id (deleted, already taken, or not in the queue). Commits."""
+        statement = (
+            update(Document)
+            .where(Document.id == document_id, Document.status == "QUEUED")
+            .values(status="PROCESSING", updated_at=func.now())
+            .returning(Document)
+            .execution_options(populate_existing=True)
+        )
+        claimed: Document | None = await self.session.scalar(statement)
+        await self.session.commit()
+        return claimed
 
     async def mark_ready(self, document_id: uuid.UUID, chunk_count: int) -> bool:
-        return False
+        """PROCESSING -> READY with the number of chunks; False if the document is no longer PROCESSING. Commits."""
+        return await self._finish(document_id, status="READY", chunk_count=chunk_count)
 
     async def mark_failed(self, document_id: uuid.UUID, code: str, message: str) -> bool:
-        return False
+        """PROCESSING -> FAILED with the reason, and no chunk of the document left, in one transaction; False if the
+        document is no longer PROCESSING (then nothing changes). Commits."""
+        return await self._finish(
+            document_id,
+            status="FAILED",
+            chunk_count=0,
+            status_reason_code=code,
+            status_reason_message=message,
+            delete_chunks=True,
+        )
+
+    async def _finish(self, document_id: uuid.UUID, *, delete_chunks: bool = False, **values: str | int) -> bool:
+        reason = {"status_reason_code": None, "status_reason_message": None}
+        try:
+            changed = await self.session.scalar(
+                update(Document)
+                .where(Document.id == document_id, Document.status == "PROCESSING")
+                .values(**{**reason, **values}, updated_at=func.now())
+                .returning(Document.id)
+            )
+            if changed is not None and delete_chunks:
+                await self.session.execute(delete(Chunk).where(Chunk.document_id == document_id))
+            await self.session.commit()
+        except BaseException:
+            await self.session.rollback()
+            raise
+        return changed is not None
