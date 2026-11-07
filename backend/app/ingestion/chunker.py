@@ -20,14 +20,14 @@ content: it is the section title (the path of the open headings joined by " > ")
 from __future__ import annotations
 
 import re
-from collections import Counter
-from collections.abc import Sequence
+from array import array
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from app.ingestion.blocks import Block
 
 _TITLE_SEPARATOR = " > "
-_WORD = re.compile(r"(\s*)(\S+)")
+_WORD = re.compile(r"\S+")
 _NO_ROW = -1
 
 
@@ -37,6 +37,14 @@ class ChunkerConfig:
     min_words: int
     max_words: int
     overlap_percent: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.min_words <= self.target_words <= self.max_words or self.target_words < 1:
+            raise ValueError(
+                "chunker words must satisfy 0 <= min_words <= target_words <= max_words and target_words >= 1"
+            )
+        if not 0 <= self.overlap_percent < 100:
+            raise ValueError("overlap_percent must be at least 0 and below 100")
 
 
 @dataclass(frozen=True)
@@ -49,78 +57,119 @@ class ChunkDraft:
     word_count: int
 
 
-@dataclass(frozen=True)
-class _Token:
-    word: str
-    separator: str  # the white space before the word, inside its window
-    row: int  # index of the table row block the word belongs to, _NO_ROW for prose
-    page: int | None
+class _Section:
+    """The words of one section, kept as offsets into one string (a few bytes per word instead of one object)."""
+
+    def __init__(self, title: str | None) -> None:
+        self.title = title
+        self.starts = array("q")  # offset of the first character of every word in `text`
+        self.ends = array("q")  # offset after the last character of every word
+        self.block_of = array("i")  # index (among the blocks with words of the section) of the block of every word
+        self.block_pages: list[int | None] = []
+        self.block_is_row: list[bool] = []
+        self.block_words: list[int] = []
+        self.text = ""
+        self._pieces: list[str] = []
+        self._length = 0
+
+    def add_block(self, block: Block) -> None:
+        words = _WORD.finditer(block.text)
+        first = next(words, None)
+        if first is None:
+            return
+        separator = ""
+        if self._pieces:
+            separator = "\n" if block.kind == "table_row" and self.block_is_row[-1] else "\n\n"
+        piece = block.text.strip()
+        shift = self._length + len(separator) - first.start()
+        index = len(self.block_pages)
+        self.starts.append(first.start() + shift)
+        self.ends.append(first.end() + shift)
+        count = 1
+        for match in words:
+            self.starts.append(match.start() + shift)
+            self.ends.append(match.end() + shift)
+            count += 1
+        self.block_of.extend(array("i", [index]) * count)
+        self.block_pages.append(block.page)
+        self.block_is_row.append(block.kind == "table_row")
+        self.block_words.append(count)
+        self._pieces.append(separator + piece)
+        self._length += len(separator) + len(piece)
+
+    def close(self) -> None:
+        self.text = "".join(self._pieces)
+        self._pieces = []
+
+    @property
+    def size(self) -> int:
+        return len(self.starts)
+
+    def content(self, start: int, end: int) -> str:
+        return self.text[self.starts[start] : self.ends[end - 1]]
+
+    def pages(self, start: int, end: int) -> list[int]:
+        blocks = self.block_pages[self.block_of[start] : self.block_of[end - 1] + 1]
+        return [page for page in blocks if page is not None]
 
 
 def chunk_blocks(blocks: Sequence[Block], config: ChunkerConfig) -> list[ChunkDraft]:
     drafts: list[ChunkDraft] = []
-    for title, tokens in _sections(blocks):
-        for start, end in _SectionCutter(tokens, config).windows():
-            window = tokens[start:end]
-            content = window[0].word + "".join(token.separator + token.word for token in window[1:])
-            pages = [token.page for token in window if token.page is not None]
+    for section in _sections(blocks):
+        for start, end in _SectionCutter(section, config).windows():
+            pages = section.pages(start, end)
             drafts.append(
                 ChunkDraft(
                     position=len(drafts),
-                    section_title=title,
+                    section_title=section.title,
                     page_start=min(pages) if pages else None,
                     page_end=max(pages) if pages else None,
-                    content=content,
-                    word_count=len(window),
+                    content=section.content(start, end),
+                    word_count=end - start,
                 )
             )
     return drafts
 
 
-def _sections(blocks: Sequence[Block]) -> list[tuple[str | None, list[_Token]]]:
-    """The words of every section with a body, in reading order, with the title of the section."""
-    sections: list[tuple[str | None, list[_Token]]] = []
+def _sections(blocks: Sequence[Block]) -> Iterator[_Section]:
+    """The sections that have a body, in reading order, one at a time."""
     open_headings: list[tuple[int, str]] = []
-    title: str | None = None
-    tokens: list[_Token] = []
-    previous_kind: str | None = None
-    for index, block in enumerate(blocks):
-        if block.kind == "heading":
-            heading = " ".join(block.text.split())
-            if not heading:
-                continue
-            if tokens:
-                sections.append((title, tokens))
-                tokens = []
-            level = max(block.level, 1)
-            while open_headings and open_headings[-1][0] >= level:
-                open_headings.pop()
-            open_headings.append((level, heading))
-            title = _TITLE_SEPARATOR.join(text for _, text in open_headings)
-            previous_kind = None
+    section = _Section(None)
+    for block in blocks:
+        if block.kind != "heading":
+            section.add_block(block)
             continue
-        row = index if block.kind == "table_row" else _NO_ROW
-        separator = "\n" if previous_kind == "table_row" and block.kind == "table_row" else "\n\n"
-        for match in _WORD.finditer(block.text):
-            tokens.append(_Token(match.group(2), separator or match.group(1), row, block.page))
-            previous_kind = block.kind
-            separator = ""
-    if tokens:
-        sections.append((title, tokens))
-    return sections
+        heading = " ".join(block.text.split())
+        if not heading:
+            continue
+        if section.size:
+            section.close()
+            yield section
+        level = max(block.level, 1)
+        while open_headings and open_headings[-1][0] >= level:
+            open_headings.pop()
+        open_headings.append((level, heading))
+        section = _Section(_TITLE_SEPARATOR.join(text for _, text in open_headings))
+    if section.size:
+        section.close()
+        yield section
 
 
 class _SectionCutter:
     """Computes the windows [start, end) over the words of one section."""
 
-    def __init__(self, tokens: Sequence[_Token], config: ChunkerConfig) -> None:
-        self._rows = [token.row for token in tokens]
-        self._size = len(tokens)
-        self._target = min(config.target_words, config.max_words)
+    def __init__(self, section: _Section, config: ChunkerConfig) -> None:
+        self._section = section
+        self._size = section.size
+        self._target = config.target_words
         self._min = config.min_words
         self._max = config.max_words
         self._overlap = round(config.target_words * config.overlap_percent / 100)
-        self._row_lengths = Counter(row for row in self._rows if row != _NO_ROW)
+
+    def _row(self, position: int) -> int:
+        """Index of the table row that holds the word at `position`, _NO_ROW for prose."""
+        block = self._section.block_of[position]
+        return block if self._section.block_is_row[block] else _NO_ROW
 
     def windows(self) -> list[tuple[int, int]]:
         windows: list[tuple[int, int]] = []
@@ -150,12 +199,13 @@ class _SectionCutter:
         """True when a window can start or end at `position`, that is outside a table row."""
         if position <= 0 or position >= self._size:
             return True
-        return self._rows[position - 1] == _NO_ROW or self._rows[position - 1] != self._rows[position]
+        row = self._row(position - 1)
+        return row == _NO_ROW or row != self._row(position)
 
     def _is_oversized_row_start(self, position: int) -> bool:
-        if position >= self._size or self._rows[position] == _NO_ROW or not self._is_boundary(position):
+        if position >= self._size or self._row(position) == _NO_ROW or not self._is_boundary(position):
             return False
-        return self._row_lengths[self._rows[position]] > self._max
+        return self._section.block_words[self._row(position)] > self._max
 
     def _row_end(self, start: int) -> int:
         end = start + 1
