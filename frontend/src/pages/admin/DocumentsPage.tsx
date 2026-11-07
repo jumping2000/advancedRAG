@@ -140,7 +140,7 @@ export function DocumentsPage() {
     changes.current += 1;
     try {
       const requeued = await api.post<DocumentItem>(`/kbs/${id}/documents/${document.id}/retry`);
-      changes.current += 1;
+      if (current.current === id) changes.current += 1; // not after a switch of KB: it would drop the list of the new one
       setDocuments((list) => list?.map((item) => (item.id === requeued.id ? requeued : item)) ?? null);
     } catch (caught) {
       const code = codeOf(caught);
@@ -159,7 +159,7 @@ export function DocumentsPage() {
     changes.current += 1;
     try {
       await api.delete<void>(`/kbs/${id}/documents/${document.id}`);
-      changes.current += 1;
+      if (current.current === id) changes.current += 1; // not after a switch of KB: it would drop the list of the new one
       setDocuments((list) => list?.filter((item) => item.id !== document.id) ?? null);
     } catch (caught) {
       setActionError(codeOf(caught));
