@@ -44,7 +44,8 @@ export function KnowledgeBasesPage() {
   return (
     <main>
       <p>{t("home.signedInAs", { username: user?.username })}</p>
-      <h2 id="kbs-title">{t("kbs.title")}</h2>
+      {/* The admin sees every KB, a user only the assigned ones. */}
+      <h2 id="kbs-title">{t(user?.role === "admin" ? "kbs.titleAll" : "kbs.title")}</h2>
       {/* Not an alert: the header's language selector owns the alert of a failed language save. */}
       {error && <p className="error">{message(error)}</p>}
       {kbs && kbs.length === 0 && <p>{t("kbs.empty")}</p>}

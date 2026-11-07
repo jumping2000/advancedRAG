@@ -54,6 +54,7 @@
   },
   "kbs": {
     "title": "Le tue knowledge base",
+    "titleAll": "Tutte le knowledge base",
     "empty": "Nessuna knowledge base ti è assegnata.",
     "back": "Torna all'elenco",
     "errors": {
@@ -79,6 +80,7 @@
     "members": "Utenti assegnati",
     "membersTitle": "Utenti assegnati a {{name}}",
     "noMembers": "Nessun utente assegnato.",
+    "inactive": "Disattivato",
     "userToAssign": "Utente da assegnare",
     "chooseUser": "Scegli un utente",
     "assign": "Assegna",

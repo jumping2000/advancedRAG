@@ -25,7 +25,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: uv sync --project backend --frozen
       # Chromium for the Playwright end-to-end tests of the UI (e2e step of verify)
-      - run: uv run --directory backend playwright install --with-deps chromium
+      - run: uv run --frozen --directory backend playwright install --with-deps chromium
       - run: npm ci --prefix frontend
       - run: python scripts/verify.py
       - if: always()

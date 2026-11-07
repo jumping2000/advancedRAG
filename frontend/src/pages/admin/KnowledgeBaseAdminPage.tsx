@@ -145,7 +145,8 @@ export function KnowledgeBaseAdminPage() {
 
   const message = (code: string) =>
     t(`kbAdmin.errors.${code}`, { defaultValue: t(`errors.${code}`, { defaultValue: t("errors.unknown") }) });
-  const available = users.filter((user) => !members.some((member) => member.id === user.id));
+  // Only active users can be chosen (owner's decision); the API still accepts an inactive one.
+  const available = users.filter((user) => user.is_active && !members.some((member) => member.id === user.id));
 
   return (
     <main>
@@ -257,6 +258,13 @@ export function KnowledgeBaseAdminPage() {
             {members.map((member) => (
               <li key={member.id}>
                 <span>{member.username}</span>
+                {!member.is_active && (
+                  <>
+                    {" ("}
+                    <span>{t("kbAdmin.inactive")}</span>
+                    {") "}
+                  </>
+                )}
                 <button type="button" disabled={busy} onClick={() => remove(member)}>
                   {t("kbAdmin.remove")}
                 </button>
