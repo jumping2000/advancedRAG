@@ -1,5 +1,7 @@
 # SPEC-2026-11-06-fase-1-fondazioni
-"""AC-001, AC-002 (REQ-001): the full docker compose stack, started from a filled .env."""
+"""AC-001, AC-002 (REQ-001): the full docker compose stack, started from a filled .env.
+
+Revised by SPEC-2026-11-07-fase-2-ingestion (REQ-001): the stack has a fifth service, the `worker`."""
 
 from __future__ import annotations
 
@@ -70,10 +72,10 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
         )
 
 
-def test_AC_001_four_services_run_and_only_nginx_publishes_ports(stack: Path) -> None:
+def test_AC_001_five_services_run_and_only_nginx_publishes_ports(stack: Path) -> None:
     output = compose("ps", "--format", "json", env_file=stack).stdout
     containers = [json.loads(line) for line in output.splitlines() if line.strip()]
-    assert {c["Service"] for c in containers} == {"nginx", "backend", "redis", "db"}
+    assert {c["Service"] for c in containers} == {"nginx", "backend", "redis", "db", "worker"}
     assert all(c["State"] == "running" for c in containers)
     published = {c["Service"] for c in containers if any(p.get("PublishedPort") for p in c.get("Publishers") or [])}
     assert published == {"nginx"}
