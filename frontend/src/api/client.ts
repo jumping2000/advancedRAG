@@ -47,4 +47,7 @@ export const api = {
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   delete: <T>(path: string) => request<T>("DELETE", path),
+  /** Skeleton (T-07): the upload of one file is not implemented yet. */
+  upload: <T>(path: string, file: File): Promise<T> =>
+    Promise.reject(new ApiError(0, `not_implemented ${path} ${file.name}`)),
 };

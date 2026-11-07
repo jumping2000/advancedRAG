@@ -95,6 +95,10 @@
       "validation_error": "Il nome deve avere da 1 a 100 caratteri e la descrizione al massimo 500."
     }
   },
+  "documents": {
+    "menu": "Documenti",
+    "title": "Documenti"
+  },
   "errors": {
     "invalid_credentials": "Nome utente o password non validi.",
     "not_authenticated": "Sessione scaduta: accedi di nuovo.",
