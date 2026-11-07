@@ -97,7 +97,56 @@
   },
   "documents": {
     "menu": "Documenti",
-    "title": "Documenti"
+    "title": "Documenti",
+    "kb": "Knowledge base",
+    "chooseKb": "Scegli una knowledge base",
+    "files": "File da caricare",
+    "uploads": "Caricamenti",
+    "uploading": "Caricamento in corso…",
+    "empty": "Nessun documento in questa knowledge base.",
+    "name": "Nome",
+    "size": "Dimensione",
+    "status": "Stato",
+    "reason": "Motivo",
+    "date": "Data",
+    "actions": "Azioni",
+    "retry": "Riprova",
+    "delete": "Elimina",
+    "confirm": "Conferma",
+    "cancel": "Annulla",
+    "confirmDelete": "Eliminare il documento {{name}}? Verranno rimossi anche i suoi chunk.",
+    "statuses": {
+      "QUEUED": "In coda",
+      "PROCESSING": "In elaborazione",
+      "READY": "Pronto",
+      "FAILED": "Fallito",
+      "UNSUPPORTED": "Non supportato"
+    },
+    "reasons": {
+      "docling_unreachable": "Il servizio di lettura dei documenti (Docling) non è raggiungibile.",
+      "docling_error": "Il servizio di lettura dei documenti (Docling) ha restituito un errore.",
+      "parse_failed": "Il file non può essere letto.",
+      "embedding_unreachable": "Il servizio degli embedding (Ollama) non è raggiungibile.",
+      "embedding_error": "Il servizio degli embedding (Ollama) ha restituito un errore.",
+      "embedding_invalid_response": "Il servizio degli embedding (Ollama) ha dato una risposta non valida.",
+      "embedding_dimension_mismatch": "I vettori ricevuti hanno una dimensione diversa da quella configurata.",
+      "verification_failed": "La verifica degli indici non è riuscita: nessun contenuto è stato salvato.",
+      "no_text_extracted": "Dal file non è stato estratto abbastanza testo (le scansioni senza testo non sono supportate).",
+      "unexpected_error": "Errore imprevisto durante l'elaborazione."
+    },
+    "errors": {
+      "duplicate_document": "Questo file è già presente nella knowledge base.",
+      "unsupported_type": "Tipo di file non supportato. Sono ammessi PDF, DOCX, PPTX, XLSX, TXT e MD.",
+      "file_too_large": "Il file supera la dimensione massima consentita.",
+      "empty_file": "Il file è vuoto.",
+      "validation_error": "Il file non può essere caricato: la richiesta non è valida.",
+      "kb_not_found": "Knowledge base non trovata.",
+      "document_not_found": "Documento non trovato.",
+      "not_retryable": "Il documento non può essere riprovato: non è più nello stato Fallito.",
+      "original_missing": "Il file originale non esiste più: carica di nuovo il documento.",
+      "forbidden": "Non hai il permesso di gestire i documenti.",
+      "internal_error": "Errore interno del server. Riprova."
+    }
   },
   "errors": {
     "invalid_credentials": "Nome utente o password non validi.",

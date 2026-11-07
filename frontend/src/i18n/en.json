@@ -97,7 +97,56 @@
   },
   "documents": {
     "menu": "Documents",
-    "title": "Documents"
+    "title": "Documents",
+    "kb": "Knowledge base",
+    "chooseKb": "Choose a knowledge base",
+    "files": "Files to upload",
+    "uploads": "Uploads",
+    "uploading": "Uploading…",
+    "empty": "No document in this knowledge base.",
+    "name": "Name",
+    "size": "Size",
+    "status": "Status",
+    "reason": "Reason",
+    "date": "Date",
+    "actions": "Actions",
+    "retry": "Retry",
+    "delete": "Delete",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "confirmDelete": "Delete the document {{name}}? Its chunks will be removed too.",
+    "statuses": {
+      "QUEUED": "Queued",
+      "PROCESSING": "Processing",
+      "READY": "Ready",
+      "FAILED": "Failed",
+      "UNSUPPORTED": "Unsupported"
+    },
+    "reasons": {
+      "docling_unreachable": "The document parsing service (Docling) cannot be reached.",
+      "docling_error": "The document parsing service (Docling) returned an error.",
+      "parse_failed": "The file could not be read.",
+      "embedding_unreachable": "The embedding service (Ollama) cannot be reached.",
+      "embedding_error": "The embedding service (Ollama) returned an error.",
+      "embedding_invalid_response": "The embedding service (Ollama) gave an invalid response.",
+      "embedding_dimension_mismatch": "The vectors received have a different size from the configured one.",
+      "verification_failed": "The check of the indexes failed: no content was saved.",
+      "no_text_extracted": "Not enough text could be extracted from the file (scans without text are not supported).",
+      "unexpected_error": "Unexpected error during processing."
+    },
+    "errors": {
+      "duplicate_document": "This file is already in the knowledge base.",
+      "unsupported_type": "File type not supported. Allowed: PDF, DOCX, PPTX, XLSX, TXT and MD.",
+      "file_too_large": "The file exceeds the maximum allowed size.",
+      "empty_file": "The file is empty.",
+      "validation_error": "The file cannot be uploaded: the request is not valid.",
+      "kb_not_found": "Knowledge base not found.",
+      "document_not_found": "Document not found.",
+      "not_retryable": "The document cannot be retried: it is no longer in the Failed state.",
+      "original_missing": "The original file no longer exists: upload the document again.",
+      "forbidden": "You are not allowed to manage documents.",
+      "internal_error": "Internal server error. Please try again."
+    }
   },
   "errors": {
     "invalid_credentials": "Invalid username or password.",
