@@ -7,6 +7,7 @@ import { LanguageSelector } from "../components/LanguageSelector";
 import { browserLanguage, i18n } from "../i18n";
 import { KnowledgeBasePage, KnowledgeBasesPage } from "../pages/KnowledgeBasesPage";
 import { LoginPage } from "../pages/LoginPage";
+import { DocumentsPage } from "../pages/admin/DocumentsPage";
 import { KnowledgeBaseAdminPage } from "../pages/admin/KnowledgeBaseAdminPage";
 import { UsersPage } from "../pages/admin/UsersPage";
 
@@ -31,6 +32,7 @@ function Layout() {
               <>
                 <Link to="/admin/users">{t("users.menu")}</Link>
                 <Link to="/admin/kbs">{t("kbAdmin.menu")}</Link>
+                <Link to="/admin/documents">{t("documents.menu")}</Link>
               </>
             )}
             <span>{user.username}</span>
@@ -45,6 +47,7 @@ function Layout() {
           <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
           <Route path="/admin/users" element={adminOnly(user, <UsersPage />)} />
           <Route path="/admin/kbs" element={adminOnly(user, <KnowledgeBaseAdminPage />)} />
+          <Route path="/admin/documents" element={adminOnly(user, <DocumentsPage />)} />
           <Route path="/kbs/:kbId" element={user ? <KnowledgeBasePage /> : <Navigate to="/login" replace />} />
           <Route path="*" element={user ? <KnowledgeBasesPage /> : <Navigate to="/login" replace />} />
         </Routes>
