@@ -270,10 +270,28 @@ async def test_AC_024_the_batch_size_setting_decides_the_size_of_the_requests(
     assert (await document_state(engine, document_id))["chunk_count"] == 40
 
 
-async def test_AC_024_a_group_answered_with_the_wrong_number_of_vectors_fails_the_document_and_saves_no_chunk(
+async def test_AC_024_a_group_after_the_first_with_the_wrong_number_of_vectors_fails_the_document_and_saves_no_chunk(
     engine: AsyncEngine, tmp_path: Path
 ) -> None:
-    """Two groups that are wrong in opposite ways would still add up to the right total: each group is checked."""
+    """The second group gets one vector too many and the third one too few: the total is right (40) but the vectors of
+    the third group would be saved against the wrong texts. Each group is checked, so the job stops at the second."""
+    with fake_ollama(dimensions=DIMENSIONS, vector_count_deltas={2: 1, 3: -1}) as ollama:
+        settings = pipeline_settings(tmp_path, ollama.url, embedding_batch_size=16)
+        document_id = await queue_markdown_document(engine, tmp_path, forty_sections())
+
+        await process_document(document_id, settings)
+
+    assert [len(request.texts) for request in ollama.requests] == [16, 16]
+    state = await document_state(engine, document_id)
+    assert state["status"] == "FAILED"
+    assert state["status_reason_code"] == "embedding_invalid_response"
+    assert await stored_chunks(engine, document_id) == []
+    assert (tmp_path / str(document_id)).is_file()
+
+
+async def test_AC_024_a_wrong_number_of_vectors_in_the_only_group_fails_the_document_and_saves_no_chunk(
+    engine: AsyncEngine, tmp_path: Path
+) -> None:
     with fake_ollama(dimensions=DIMENSIONS, vector_count_delta=-1) as ollama:
         settings = pipeline_settings(tmp_path, ollama.url, embedding_batch_size=16)
         document_id = await queue_markdown_document(engine, tmp_path, forty_sections())
@@ -284,4 +302,3 @@ async def test_AC_024_a_group_answered_with_the_wrong_number_of_vectors_fails_th
     assert state["status"] == "FAILED"
     assert state["status_reason_code"] == "embedding_invalid_response"
     assert await stored_chunks(engine, document_id) == []
-    assert (tmp_path / str(document_id)).is_file()

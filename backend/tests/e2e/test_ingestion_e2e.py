@@ -44,7 +44,7 @@ def compose(env_file: Path, *args: str, check: bool = True) -> subprocess.Comple
 
 
 @pytest.fixture(scope="module")
-def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+def env_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
     env_file = tmp_path_factory.mktemp("e2e-ingest") / ".env"
     env_file.write_text(
         "\n".join(
@@ -62,6 +62,11 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
         + "\n",
         encoding="utf-8",
     )
+    return env_file
+
+
+@pytest.fixture(scope="module")
+def stack(env_file: Path) -> Iterator[Path]:
     try:
         compose(env_file, "up", "-d", "--build", "--wait", "--wait-timeout", "240")
         yield env_file
@@ -109,6 +114,57 @@ def test_AC_001_the_stack_has_the_five_services_and_only_nginx_publishes_ports(s
     assert all(c["State"] == "running" for c in found)
     published = {c["Service"] for c in found if any(p.get("PublishedPort") for p in c.get("Publishers") or [])}
     assert published == {"nginx"}
+
+
+def rendered_services(env_file: Path) -> dict[str, dict[str, object]]:
+    """The services as Compose renders them (variables resolved, anchors and overrides applied)."""
+    return dict(json.loads(compose(env_file, "config", "--format", "json").stdout)["services"])
+
+
+WORKER_SETTINGS = {
+    "DATABASE_URL",
+    "POSTGRES_PASSWORD",
+    "REDIS_URL",
+    "OLLAMA_BASE_URL",
+    "DOCLING_BASE_URL",
+    "UPLOAD_DIR",
+}
+BACKEND_ONLY_SETTINGS = {
+    "ADMIN_USERNAME",
+    "ADMIN_PASSWORD",
+    "SESSION_IDLE_TIMEOUT_MINUTES",
+    "MAX_UPLOAD_SIZE_MB",
+    "HEALTH_CHECK_TIMEOUT_SECONDS",
+}
+
+
+def test_AC_001_the_worker_gets_only_the_settings_it_needs_and_none_of_the_admin_ones(env_file: Path) -> None:
+    """Least privilege: no ADMIN_*, session, upload-limit or health-timeout setting reaches the worker. The stack
+    boots with this environment (the other tests of this file run on it)."""
+    services = rendered_services(env_file)
+    worker_environment = set(dict(services["worker"]["environment"]))  # type: ignore[call-overload]
+    backend_environment = set(dict(services["backend"]["environment"]))  # type: ignore[call-overload]
+
+    assert not any(name.startswith("ADMIN_") for name in worker_environment)
+    assert worker_environment & BACKEND_ONLY_SETTINGS == set()
+    assert WORKER_SETTINGS <= worker_environment
+    assert {"EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "EMBEDDING_BATCH_SIZE", "EMBEDDING_TIMEOUT_SECONDS"} <= (
+        worker_environment
+    )
+    assert {"CHUNK_TARGET_WORDS", "CHUNK_MIN_WORDS", "CHUNK_MAX_WORDS", "CHUNK_OVERLAP_PERCENT"} <= worker_environment
+    allowed = WORKER_SETTINGS | {name for name in worker_environment if name.startswith(("EMBEDDING_", "CHUNK_"))}
+    assert worker_environment == allowed
+    # The backend keeps all of them, and shares every setting of the worker.
+    assert BACKEND_ONLY_SETTINGS <= backend_environment
+    assert worker_environment <= backend_environment
+
+
+def test_AC_001_backend_and_worker_run_one_image_built_once(env_file: Path) -> None:
+    services = rendered_services(env_file)
+
+    assert services["backend"]["image"] == services["worker"]["image"]
+    assert "build" in services["backend"]
+    assert "build" not in services["worker"]
 
 
 def test_AC_001_backend_and_worker_mount_the_same_uploads_volume(stack: Path) -> None:

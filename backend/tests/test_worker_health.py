@@ -165,3 +165,34 @@ def test_AC_001_worker_healthcheck_exits_1_without_a_heartbeat_and_0_with_it(
 
 def test_AC_001_worker_healthcheck_exits_1_when_redis_is_down() -> None:
     assert run_healthcheck(closed_port_url("redis") + "/0") == 1
+
+
+def first_page_keys(connection: SyncRedis) -> list[bytes]:
+    return list(connection.scan(cursor=0, match=HEARTBEAT_PATTERN, count=100)[1])
+
+
+async def test_AC_002_the_worker_is_found_among_thousands_of_other_keys_beyond_the_first_scan_page(
+    client_for: Callable[[Settings], httpx.AsyncClient], redis_connection: SyncRedis
+) -> None:
+    """SCAN returns a page at a time: a check that read only the first one would miss a heartbeat key that is not in
+    it. 20000 unrelated keys make many pages; the host name of the heartbeat key is chosen so that the first page
+    (same MATCH and COUNT as the check) does not hold it."""
+    unrelated = [f"scan-test:{number}" for number in range(20000)]
+    redis_connection.mset(dict.fromkeys(unrelated, "1"))
+    try:
+        for attempt in range(50):
+            key = f"{HEARTBEAT_PREFIX}scan-host-{attempt}"
+            redis_connection.set(key, "1", ex=30)
+            if key.encode() not in first_page_keys(redis_connection):
+                break
+            redis_connection.delete(key)
+        else:
+            pytest.fail("every heartbeat key landed in the first SCAN page")
+        assert first_page_keys(redis_connection) == []
+
+        async with client_for(make_settings()) as client:
+            response = await client.get("/api/health")
+    finally:
+        redis_connection.delete(*unrelated)
+
+    assert response.json()["checks"]["worker"] == "ok"
