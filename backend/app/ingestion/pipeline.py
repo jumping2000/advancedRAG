@@ -5,11 +5,16 @@ taken, not in the queue) the job ends quietly. A PDF, DOCX, PPTX or XLSX is conv
 directly. From then on every outcome is written on the document: READY with its chunk count and the original deleted;
 UNSUPPORTED `no_text_extracted` (fewer than MIN_EXTRACTED_CHARS characters that are not white after the normalization)
 with the original deleted at once; or FAILED with a code and a fixed message and no chunk of it left (the original is
-kept, to retry). A document deleted while it is processed makes the job stop without writing anything.
+kept, to retry). A document deleted while it is processed makes the job stop without writing anything: the chunks are
+saved under a lock on the document row (`DocumentGone` when it is gone) and the READY, UNSUPPORTED and FAILED marks
+change only a PROCESSING row. So the original that is missing after a deletion (the file goes with the row) is not told
+apart by a check: the FAILED mark finds no row and the job ends quietly, whereas a file lost under a row that is still
+PROCESSING makes that document FAILED `unexpected_error`.
 
 A temporary error of Docling or Ollama repeats that one step (the Docling call, each group of embeddings) up to
 INGESTION_MAX_ATTEMPTS attempts in all (`with_retries`); any other error ends the document at once. An error that is not
-an `IngestionError` (a bug, a database error, the timeout of the job) is FAILED `unexpected_error`.
+an `IngestionError` (a bug, a database error, a missing original) is FAILED `unexpected_error`, and so is the timeout of
+the job, with a message of its own.
 
 Logs carry the document id, the status, the reason code, the step and the attempt number only: never the content, the
 name of the file or the vectors (REQ-102), and so no exception message either, only the exception type.
@@ -23,6 +28,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Literal, cast
 
+from rq.timeouts import JobTimeoutException
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from app.config import Settings
@@ -46,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 _TEXT_FORMATS = ("txt", "md")
 _UNEXPECTED = "Unexpected error while processing the document"
+_TIMEOUT = "The processing time limit was exceeded"
 _NO_TEXT = "No text could be extracted from the document"
 
 type _Sleep = Callable[[float], Awaitable[None]]
@@ -68,6 +75,8 @@ async def process_document(document_id: uuid.UUID, settings: Settings, *, sleep:
             logger.info("document %s: deleted while processing, work discarded", document_id)
         except IngestionError as error:
             await _fail(engine, document_id, error.code, error.message, type(error).__name__)
+        except JobTimeoutException as error:
+            await _fail(engine, document_id, "unexpected_error", _TIMEOUT, type(error).__name__)
         except Exception as error:
             await _fail(engine, document_id, "unexpected_error", _UNEXPECTED, type(error).__name__)
     finally:

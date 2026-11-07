@@ -10,13 +10,18 @@ on the ingestion queue. No row, file or job is left behind by any error.
 Retry: a FAILED document whose original still exists goes back to QUEUED in one statement (`requeue`, which only one of
 two simultaneous requests can win) and is put on the queue; any other state is 409 `not_retryable`, a FAILED document
 without its original 409 `original_missing`.
+
+Delete: the document row goes first (its chunks with it, by cascade), then the original; it is the same for a document
+that a job is processing, which then finds nothing to write (REQ-019). A file that cannot be removed is logged by the
+document id and the type of the error and does not fail the request: the document is gone, and the hourly sweep of the
+worker deletes a file that has no document.
 """
 
 import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from starlette.datastructures import FormData, UploadFile
@@ -184,3 +189,16 @@ async def retry_document(request: Request, kb_id: KbId, document_id: str, repo: 
         logger.error("retry of document %s: the job could not be queued (%s)", parsed_id, type(error).__name__)
         raise ApiError(500, "internal_error", "Internal server error") from None
     return DocumentOut.from_document(requeued)
+
+
+@router.delete("/{document_id}", status_code=204, response_class=Response)
+async def delete_document(request: Request, kb_id: KbId, document_id: str, repo: Repository) -> None:
+    """The document, its chunks and its original, at once, whatever its state (also PROCESSING)."""
+    parsed_id = parse_document_id(document_id)
+    if not await repo.delete(kb_id, parsed_id):
+        raise document_not_found()
+    settings: Settings = request.app.state.settings
+    try:
+        UploadStorage(settings.upload_dir).remove(parsed_id)
+    except OSError as error:
+        logger.warning("delete of document %s: its original could not be removed (%s)", parsed_id, type(error).__name__)

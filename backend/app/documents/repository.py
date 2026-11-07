@@ -5,6 +5,8 @@ routes check the KB first with KnowledgeBaseRepository.get_for (AGENTS.md: acces
 """
 
 import uuid
+from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -64,6 +66,24 @@ class DocumentRepository:
             select(Document).where(Document.kb_id == kb_id, Document.id == document_id)
         )
         return document
+
+    async def ids_for_kb(self, kb_id: uuid.UUID) -> list[uuid.UUID]:
+        """The ids of every document of the KB (the KB is deleted next: the originals are removed by these ids)."""
+        return list((await self.session.scalars(select(Document.id).where(Document.kb_id == kb_id))).all())
+
+    async def ids_in_status(self, status: str, *, changed_before: datetime | None = None) -> list[uuid.UUID]:
+        """For the worker, across KBs: the ids of the documents in the status, only those last changed before
+        `changed_before` when it is given (the age of a FAILED document counts from its transition)."""
+        query = select(Document.id).where(Document.status == status).order_by(Document.updated_at, Document.id)
+        if changed_before is not None:
+            query = query.where(Document.updated_at < changed_before)
+        return list((await self.session.scalars(query)).all())
+
+    async def existing_ids(self, ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
+        """For the worker: which of the ids are documents."""
+        if not ids:
+            return set()
+        return set((await self.session.scalars(select(Document.id).where(Document.id.in_(ids)))).all())
 
     async def delete(self, kb_id: uuid.UUID, document_id: uuid.UUID) -> bool:
         deleted = await self.session.scalar(

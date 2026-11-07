@@ -1,8 +1,8 @@
 # advancedRAG stack: docker compose up --build (values from .env, see .env.example)
 name: advancedrag
 # What the backend and the worker both read. The worker gets nothing else of the backend's (least privilege): the admin
-# account, the sessions, the upload limit and the health timeout are the backend's; the Docling key, the attempts and
-# the minimum text are the worker's (see the `worker` service).
+# account, the sessions, the upload limit and the health timeout are the backend's; the Docling key, the attempts, the
+# minimum text and the retention of the FAILED originals are the worker's (see the `worker` service).
 x-common-environment: &common-environment
   DATABASE_URL: postgresql+asyncpg://rag@db:5432/ragdb
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -83,6 +83,11 @@ services:
       INGESTION_MAX_ATTEMPTS: ${INGESTION_MAX_ATTEMPTS:-3}
       INGESTION_RETRY_BACKOFF_SECONDS: ${INGESTION_RETRY_BACKOFF_SECONDS:-10}
       MIN_EXTRACTED_CHARS: ${MIN_EXTRACTED_CHARS:-50}
+      # Only the worker deletes the originals of the FAILED documents, at its start and every hour
+      FAILED_ORIGINAL_RETENTION_DAYS: ${FAILED_ORIGINAL_RETENTION_DAYS:-7}
+    # A stop (SIGTERM) lets the job in progress finish for this long; a longer job is killed and its document is made
+    # FAILED "Processing was interrupted" by the next start
+    stop_grace_period: 120s
     volumes:
       - uploads:/data/uploads
     depends_on:
