@@ -32,20 +32,34 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = Field(default=20, gt=0)
     # Indexing profile (REQ-013): the embedding model and the size of its vectors, and the chunker parameters (REQ-011).
     # pgvector indexes at most 2000 dimensions of a `vector`.
-    embedding_model: str = Field(default="bge-m3", min_length=1)
-    embedding_dimensions: int = Field(default=1024, ge=1, le=2000)
-    chunk_target_words: int = Field(default=300, ge=1)
-    chunk_min_words: int = Field(default=50, ge=0)
-    chunk_max_words: int = Field(default=450, ge=1)
-    chunk_overlap_percent: int = Field(default=15, ge=0, lt=100)
+    # The ranges are checked by `_check_profile_settings`, so that the error names the environment variable.
+    embedding_model: str = "bge-m3"
+    embedding_dimensions: int = 1024
+    chunk_target_words: int = 300
+    chunk_min_words: int = 50
+    chunk_max_words: int = 450
+    chunk_overlap_percent: int = 15
 
     @model_validator(mode="after")
-    def _chunk_sizes_are_consistent(self) -> Self:
-        if not self.chunk_min_words <= self.chunk_target_words <= self.chunk_max_words:
-            raise ValueError(
+    def _check_profile_settings(self) -> Self:
+        problems: list[str] = []
+        if not self.embedding_model.strip():
+            problems.append("EMBEDDING_MODEL must not be empty")
+        if not 1 <= self.embedding_dimensions <= 2000:
+            problems.append(f"EMBEDDING_DIMENSIONS must be from 1 to 2000, got {self.embedding_dimensions}")
+        if self.chunk_target_words < 1:
+            problems.append(f"CHUNK_TARGET_WORDS must be at least 1, got {self.chunk_target_words}")
+        if self.chunk_min_words < 0:
+            problems.append(f"CHUNK_MIN_WORDS must be at least 0, got {self.chunk_min_words}")
+        if not 0 <= self.chunk_overlap_percent < 100:
+            problems.append(f"CHUNK_OVERLAP_PERCENT must be from 0 to 99, got {self.chunk_overlap_percent}")
+        if not problems and not self.chunk_min_words <= self.chunk_target_words <= self.chunk_max_words:
+            problems.append(
                 "CHUNK_MIN_WORDS <= CHUNK_TARGET_WORDS <= CHUNK_MAX_WORDS is required, got "
                 f"{self.chunk_min_words}, {self.chunk_target_words}, {self.chunk_max_words}"
             )
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
 
     @property

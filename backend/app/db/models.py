@@ -96,6 +96,8 @@ class Document(Base):
         CheckConstraint("status <> 'READY' or chunk_count > 0", name="documents_ready_chunks_check"),
         # The same content (SHA-256) is stored once per KB, in any status; it also serves the reads by kb_id.
         Index("documents_kb_id_checksum_key", "kb_id", "checksum", unique=True),
+        # Target of the composite foreign key of the chunks (a chunk has the KB of its document).
+        UniqueConstraint("id", "kb_id", name="documents_id_kb_id_key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -152,13 +154,20 @@ class IndexingProfile(Base):
 
 
 class Chunk(Base):
-    """A piece of a document with its vector. The database keeps the vector and the profile consistent: the vector has
-    `dimensions` components (CHECK) and `(profile_id, dimensions)` is a row of `indexing_profiles` (foreign key). The
+    """A piece of a document with its vector. The database keeps it consistent: the vector has `dimensions` components
+    (CHECK), `(profile_id, dimensions)` is a row of `indexing_profiles` and `(document_id, kb_id)` a row of `documents`
+    (composite foreign keys: the chunk has the KB of its document, and goes away with it). The
     BM25 index `chunks_bm25` and the HNSW index of each profile exist only in the database (migration 0004 and
     `ensure_profile`)."""
 
     __tablename__ = "chunks"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "kb_id"],
+            ["documents.id", "documents.kb_id"],
+            ondelete="CASCADE",
+            name="chunks_document_kb_fkey",
+        ),
         ForeignKeyConstraint(
             ["profile_id", "dimensions"],
             ["indexing_profiles.id", "indexing_profiles.dimensions"],
@@ -168,17 +177,14 @@ class Chunk(Base):
         CheckConstraint("word_count >= 0", name="chunks_word_count_check"),
         CheckConstraint("vector_dims(embedding) = dimensions", name="chunks_embedding_dimensions_check"),
         UniqueConstraint("document_id", "position", name="chunks_document_position_key"),
+        Index("chunks_kb_id_idx", "kb_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
     )
-    kb_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
-    )
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
-    )
+    kb_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
