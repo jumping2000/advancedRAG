@@ -175,4 +175,4 @@ vede e apre solo quella; `python3 scripts/verify.py` e la CI sono verdi, inclusi
 - Dataset e metriche di valutazione del retrieval e della generazione (fase 4) — blocking: no
 
 ## Revisions
-- none
+- 2026-11-07: REQ-001/AC-001 (quattro servizi Compose diventano cinque, con `worker`) e REQ-003/AC-005 (l'elenco dei controlli di `GET /api/health` include `worker`) sono rivisti da SPEC-2026-11-07-fase-2-ingestion (REQ-001, AC-001, AC-002); i test `test_stack.py` e `test_health.py` si aggiornano con il task T-04 di quella spec.
