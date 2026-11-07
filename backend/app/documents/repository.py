@@ -102,6 +102,27 @@ class DocumentRepository:
             delete_chunks=True,
         )
 
+    async def mark_unsupported(self, document_id: uuid.UUID, code: str, message: str) -> bool:
+        """PROCESSING -> UNSUPPORTED with the reason (nothing could be read from the document); False if the document
+        is no longer PROCESSING (then nothing changes). It deletes no chunk and no file. Commits."""
+        return await self._finish(
+            document_id, status="UNSUPPORTED", chunk_count=0, status_reason_code=code, status_reason_message=message
+        )
+
+    async def requeue(self, kb_id: uuid.UUID, document_id: uuid.UUID) -> Document | None:
+        """FAILED -> QUEUED in one statement, clearing the reason: the document, or None when this KB has no FAILED
+        document with this id (also when two requests race: only one of them finds it FAILED). Commits."""
+        statement = (
+            update(Document)
+            .where(Document.kb_id == kb_id, Document.id == document_id, Document.status == "FAILED")
+            .values(status="QUEUED", status_reason_code=None, status_reason_message=None, updated_at=func.now())
+            .returning(Document)
+            .execution_options(populate_existing=True)
+        )
+        requeued: Document | None = await self.session.scalar(statement)
+        await self.session.commit()
+        return requeued
+
     async def _finish(self, document_id: uuid.UUID, *, delete_chunks: bool = False, **values: str | int) -> bool:
         reason = {"status_reason_code": None, "status_reason_message": None}
         try:

@@ -1,4 +1,4 @@
-"""Documents API of a knowledge base (REQ-002 to REQ-006), for the admin only.
+"""Documents API of a knowledge base (REQ-002 to REQ-006, REQ-018), for the admin only.
 
 The role is checked before the ids and the body (router-level dependency): a `user` gets 403 whatever it sends. Then
 the KB (404 kb_not_found, also for an id that is not a UUID), then the size announced by the request, then the body.
@@ -6,6 +6,10 @@ the KB (404 kb_not_found, also for an id that is not a UUID), then the size anno
 Upload: the file is copied to `{id}.part` while its SHA-256 and size are computed, checked (empty, type), inserted
 (the unique index (kb_id, checksum) refuses duplicates, also between concurrent requests), renamed to `{id}` and put
 on the ingestion queue. No row, file or job is left behind by any error.
+
+Retry: a FAILED document whose original still exists goes back to QUEUED in one statement (`requeue`, which only one of
+two simultaneous requests can win) and is put on the queue; any other state is 409 `not_retryable`, a FAILED document
+without its original 409 `original_missing`.
 """
 
 import logging
@@ -44,6 +48,10 @@ def document_not_found() -> ApiError:
 def file_too_large() -> ApiError:
     # The same body that Nginx answers when it blocks a request above the limit (nginx/default.conf.template).
     return ApiError(413, "file_too_large", "The file is too large")
+
+
+def not_retryable() -> ApiError:
+    return ApiError(409, "not_retryable", "Only a failed document can be retried")
 
 
 def parse_document_id(document_id: str) -> uuid.UUID:
@@ -151,3 +159,28 @@ async def get_document(kb_id: KbId, document_id: str, repo: Repository) -> Docum
     if document is None:
         raise document_not_found()
     return DocumentOut.from_document(document)
+
+
+@router.post("/{document_id}/retry", status_code=202)
+async def retry_document(request: Request, kb_id: KbId, document_id: str, repo: Repository) -> DocumentOut:
+    """FAILED -> QUEUED and a new job. The request has no body (a POST without Content-Type passes `require_json`)."""
+    settings: Settings = request.app.state.settings
+    parsed_id = parse_document_id(document_id)
+    document = await repo.get(kb_id, parsed_id)
+    if document is None:
+        raise document_not_found()
+    if document.status != "FAILED":
+        raise not_retryable()
+    if not UploadStorage(settings.upload_dir).exists(parsed_id):
+        raise ApiError(409, "original_missing", "The original file no longer exists: upload the document again")
+    requeued = await repo.requeue(kb_id, parsed_id)
+    if requeued is None:
+        raise not_retryable()  # another request was faster: it queued the document, this one must not queue it again
+    try:
+        await run_in_threadpool(queue.enqueue_document, settings.redis_url, parsed_id)
+    except Exception as error:
+        # Only the id and the type of the error are logged (REQ-102). The document stays QUEUED: the worker puts the
+        # QUEUED documents that have no job back on the queue when it starts.
+        logger.error("retry of document %s: the job could not be queued (%s)", parsed_id, type(error).__name__)
+        raise ApiError(500, "internal_error", "Internal server error") from None
+    return DocumentOut.from_document(requeued)

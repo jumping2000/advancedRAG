@@ -1,7 +1,8 @@
 # advancedRAG stack: docker compose up --build (values from .env, see .env.example)
 name: advancedrag
-# What the backend and the worker both read. The worker gets nothing else (least privilege): the admin account, the
-# sessions, the upload limit and the health timeout are the backend's.
+# What the backend and the worker both read. The worker gets nothing else of the backend's (least privilege): the admin
+# account, the sessions, the upload limit and the health timeout are the backend's; the Docling key, the attempts and
+# the minimum text are the worker's (see the `worker` service).
 x-common-environment: &common-environment
   DATABASE_URL: postgresql+asyncpg://rag@db:5432/ragdb
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -73,7 +74,15 @@ services:
     # Built by the `backend` service, which the worker waits for: never pulled
     pull_policy: never
     command: ["python", "-m", "app.worker"]
-    environment: *common-environment
+    environment:
+      <<: *common-environment
+      # Only the worker calls Docling to convert a file and repeats a step: the backend does not get these
+      DOCLING_API_KEY: ${DOCLING_API_KEY:-}
+      DOCLING_TIMEOUT_SECONDS: ${DOCLING_TIMEOUT_SECONDS:-600}
+      DOCLING_INCLUDE_IMAGES: ${DOCLING_INCLUDE_IMAGES:-false}
+      INGESTION_MAX_ATTEMPTS: ${INGESTION_MAX_ATTEMPTS:-3}
+      INGESTION_RETRY_BACKOFF_SECONDS: ${INGESTION_RETRY_BACKOFF_SECONDS:-10}
+      MIN_EXTRACTED_CHARS: ${MIN_EXTRACTED_CHARS:-50}
     volumes:
       - uploads:/data/uploads
     depends_on:
