@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -209,7 +211,7 @@ async def test_AC_017_a_document_is_sent_to_docling_with_the_key_and_ends_ready_
     (request,) = docling.requests
     assert request.content == content
     assert request.api_key == API_KEY
-    assert request.fields == {"from_formats": fmt, "to_formats": "json", "do_ocr": "false"}
+    assert request.fields == {"from_formats": fmt, "to_formats": "json", "do_ocr": "false", "include_images": "false"}
     # The name of the user's file stays here; Docling gets a name made of the document id and the format
     assert request.filename == f"{document_id}.{fmt}"
     state = await state_of(engine, document_id)
@@ -567,6 +569,91 @@ async def test_AC_033_an_embedding_error_that_is_not_temporary_is_not_repeated(
 
     assert len(ollama.requests) == 1
     await assert_failed(engine, tmp_path, document_id, "embedding_error")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_AC_033_a_refused_docling_key_fails_the_document_with_docling_error_after_one_attempt(
+    engine: AsyncEngine, tmp_path: Path, status: int
+) -> None:
+    waits = Waits()
+    with fake_ollama(dimensions=DIMENSIONS) as ollama, fake_docling(fail_status=status) as docling:
+        settings = settings_for(tmp_path, ollama.url, docling.url)
+        document_id = await add_document(engine, tmp_path, fake_document_file(MANUAL))
+
+        await process_document(document_id, settings, sleep=waits)
+
+    assert len(docling.requests) == 1
+    assert waits.seconds == []
+    await assert_failed(
+        engine,
+        tmp_path,
+        document_id,
+        "docling_error",
+        "The document parsing service refused the request: check DOCLING_API_KEY",
+    )
+    assert ollama.requests == []
+
+
+@pytest.mark.parametrize(("include", "sent"), [(None, "false"), (False, "false"), (True, "true")])
+async def test_AC_017_the_setting_docling_include_images_decides_the_form_field_include_images(
+    engine: AsyncEngine, tmp_path: Path, include: bool | None, sent: str
+) -> None:
+    overrides = {} if include is None else {"docling_include_images": include}
+    with fake_ollama(dimensions=DIMENSIONS) as ollama, fake_docling() as docling:
+        settings = settings_for(tmp_path, ollama.url, docling.url, **overrides)
+        document_id = await add_document(engine, tmp_path, fake_document_file(MANUAL))
+
+        await process_document(document_id, settings, sleep=no_sleep)
+
+    assert [request.fields["include_images"] for request in docling.requests] == [sent]
+    assert (await state_of(engine, document_id))["status"] == "READY"
+
+
+@pytest.fixture
+def pipeline_logs(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> pytest.LogCaptureFixture:
+    """The records of the pipeline's logger (Alembic's fileConfig, run by the schema fixture, disabled it)."""
+    monkeypatch.setattr(logging.getLogger("app.ingestion.pipeline"), "disabled", False)
+    caplog.set_level(logging.INFO, logger="app.ingestion.pipeline")
+    return caplog
+
+
+async def test_AC_031_a_partial_success_continues_and_logs_one_line_with_the_id_and_the_number_of_errors(
+    engine: AsyncEngine, tmp_path: Path, pipeline_logs: pytest.LogCaptureFixture
+) -> None:
+    """Owner's decision: Docling's `partial_success` is accepted and the document goes on. The one warning holds the id
+    of the document and the number of errors Docling reported (3), nothing of what they say, no file name, no text."""
+    with (
+        fake_ollama(dimensions=DIMENSIONS) as ollama,
+        fake_docling(result_status="partial_success", error_text=f"page 2 failed: {SECRET}", error_count=3) as docling,
+    ):
+        settings = settings_for(tmp_path, ollama.url, docling.url)
+        document_id = await add_document(engine, tmp_path, fake_document_file(MANUAL))
+
+        await process_document(document_id, settings, sleep=no_sleep)
+
+    assert len(docling.requests) == 1
+    assert (await state_of(engine, document_id))["status"] == "READY"
+    warnings = [record for record in pipeline_logs.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert str(document_id) in message
+    assert re.findall(r"\d+", message.replace(str(document_id), "")) == ["3"]
+    assert SECRET not in message
+    assert "segretissimo" not in message
+    assert warnings[0].exc_info is None
+
+
+async def test_AC_031_a_plain_success_logs_no_warning(
+    engine: AsyncEngine, tmp_path: Path, pipeline_logs: pytest.LogCaptureFixture
+) -> None:
+    with fake_ollama(dimensions=DIMENSIONS) as ollama, fake_docling() as docling:
+        settings = settings_for(tmp_path, ollama.url, docling.url)
+        document_id = await add_document(engine, tmp_path, fake_document_file(MANUAL))
+
+        await process_document(document_id, settings, sleep=no_sleep)
+
+    assert (await state_of(engine, document_id))["status"] == "READY"
+    assert [record for record in pipeline_logs.records if record.levelno >= logging.WARNING] == []
 
 
 # AC-016: an error on the last group ---------------------------------------------------------------------------------

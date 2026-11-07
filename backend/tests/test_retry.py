@@ -183,3 +183,8 @@ def test_AC_017_the_docling_api_key_is_a_secret_that_never_shows_in_the_settings
     assert settings.docling_api_key.get_secret_value() == "s3cret-docling-key"
     assert "s3cret-docling-key" not in repr(settings)
     assert "s3cret-docling-key" not in str(settings.model_dump())
+
+
+def test_AC_017_docling_does_not_extract_images_unless_the_setting_says_so() -> None:
+    assert make_settings().docling_include_images is False
+    assert make_settings(docling_include_images=True).docling_include_images is True

@@ -233,6 +233,8 @@ class FakeDocling:
     result_status: str = "success"
     # The `errors` of the answer, as text that a client must never copy into a reason (it may hold file content).
     error_text: str | None = None
+    # How many entries `errors` holds when `error_text` is set
+    error_count: int = 1
     # Answer 200 with a body that is not a conversion result.
     invalid_body: bool = False
     # Close the connection without answering.
@@ -293,7 +295,7 @@ class _DoclingHandler(_Quiet):
         if state.invalid_body:
             _json(self, 200, {"document": "not a document"})
             return
-        errors = [{"error_message": state.error_text}] if state.error_text else []
+        errors = [{"error_message": state.error_text}] * state.error_count if state.error_text else []
         if state.result_status == "failure":
             _json(self, 200, {"document": {}, "status": "failure", "errors": errors})
             return

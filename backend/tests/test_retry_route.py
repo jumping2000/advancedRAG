@@ -14,6 +14,7 @@ upload folder inside pytest's tmp_path.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -31,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from app.auth.passwords import hash_password
 from app.config import Settings
 from app.db.models import User
+from app.documents import queue
 from app.ingestion import jobs
 from app.ingestion.jobs import process_document_job
 from app.ingestion.pipeline import process_document
@@ -479,3 +481,47 @@ async def test_AC_036_a_retry_of_a_document_that_failed_again_can_be_pressed_aga
             state = await row_of(engine, document_id)
             assert (state["status"], state["status_reason_code"]) == ("FAILED", "docling_unreachable")
             assert (tmp_path / str(document_id)).is_file()
+
+
+async def test_AC_036_when_the_job_cannot_be_queued_the_answer_is_500_and_the_document_stays_queued(
+    engine: AsyncEngine,
+    admin: httpx.AsyncClient,
+    kb: uuid.UUID,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Owner's decision: accepted as it is. Redis fails after the document went FAILED -> QUEUED: 500 `internal_error`,
+    the document stays QUEUED without a job (T-06's start-up recovery puts it back on the queue), the original is kept,
+    a second press is 409 `not_retryable`, and the log line holds the id of the document and the type of the error,
+    never the text of the error."""
+
+    def broken(redis_url: str, document_id: uuid.UUID) -> None:
+        raise ConnectionError("redis is down: contenuto-riservato-del-documento")
+
+    monkeypatch.setattr(queue, "enqueue_document", broken)
+    monkeypatch.setattr(logging.getLogger("app.documents.routes"), "disabled", False)  # Alembic disabled it
+    caplog.set_level(logging.INFO, logger="app.documents.routes")
+    document_id = await add_document(engine, tmp_path, kb, "FAILED")
+
+    response = await admin.post(retry_url(kb, document_id))
+
+    assert response.status_code == 500
+    assert error_of(response) == {"code": "internal_error", "message": "Internal server error"}
+    assert "contenuto-riservato" not in response.text
+    state = await row_of(engine, document_id)
+    assert (state["status"], state["status_reason_code"], state["status_reason_message"]) == ("QUEUED", None, None)
+    assert queued_jobs() == []
+    assert (tmp_path / str(document_id)).is_file()
+    records = [record for record in caplog.records if record.name == "app.documents.routes"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is None
+    message = records[0].getMessage()
+    assert str(document_id) in message
+    assert "ConnectionError" in message
+    assert "contenuto-riservato" not in message
+    assert "redis is down" not in message
+    again = await admin.post(retry_url(kb, document_id))
+    assert again.status_code == 409
+    assert error_of(again)["code"] == "not_retryable"
