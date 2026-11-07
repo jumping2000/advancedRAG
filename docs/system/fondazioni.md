@@ -7,9 +7,11 @@
 The platform runs as a Docker Compose stack of five services: `nginx` (the only one with a host port, `HTTP_PORT`,
 default 80), `backend` (FastAPI on port 8000, inside the Compose network only), `worker` (phase 2, T-04: the image of
 the backend running `python -m app.worker`, with no port), `redis` and `db` (ParadeDB, PostgreSQL 17 with the `vector`
-and `pg_search` extensions). `backend` and `worker` read the same environment (one YAML anchor in `compose.yaml`) and
-mount the same `uploads` volume at `/data/uploads`; the worker starts after the backend is healthy (the backend applies
-the migrations). Nginx serves the compiled React frontend and proxies `/api/` to the
+and `pg_search` extensions). `backend` and `worker` run the same image (built once, by `backend`) and mount the same `uploads` volume at
+`/data/uploads`. The worker gets only the common part of the environment (database, Redis, Ollama, Docling, `UPLOAD_DIR`
+and the `EMBEDDING_*` and `CHUNK_*` settings), through a YAML anchor in `compose.yaml`: the admin account, the sessions,
+the upload limit and the health timeout stay with the backend. The worker starts after the backend is healthy (the
+backend applies the migrations). Nginx serves the compiled React frontend and proxies `/api/` to the
 backend (the proxy lines live in `nginx/api-proxy.conf`, included by both server templates), always overwriting
 `X-Forwarded-Proto` with its own scheme. The request body limit is 1 MB, except for the document upload
 `/api/kbs/{id}/documents`, where it is `MAX_UPLOAD_SIZE_MB` + 1 MB and a request above it gets 413 with the JSON error
