@@ -203,7 +203,7 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-016: an invalid name shows the rule of 
   );
 });
 
-it("SPEC-2026-11-06-fase-1-fondazioni/AC-017: the admin deactivates and reactivates a user", async () => {
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-017: the admin confirms the deactivation, then reactivates without confirmation", async () => {
   browserLanguages(["it-IT"]);
   const calls = adminRoutes([anna, mario], {
     [`PATCH /api/admin/users/${mario.id}`]: (init) =>
@@ -213,24 +213,49 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-017: the admin deactivates and reactiva
 
   fireEvent.click(within(await rowOf("mario")).getByRole("button", { name: "Disattiva" }));
 
+  const dialog = await screen.findByRole("dialog", {
+    name: "Disattivare mario? Tutte le sue sessioni verranno chiuse.",
+  });
+  expect(calls.map((call) => call.key)).not.toContain(`PATCH /api/admin/users/${mario.id}`);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Disattiva" }));
+
   expect(await within(await rowOf("mario")).findByText("Disattivato")).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   fireEvent.click(within(await rowOf("mario")).getByRole("button", { name: "Riattiva" }));
 
   expect(await within(await rowOf("mario")).findByText("Attivo")).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(within(await rowOf("mario")).getByRole("button", { name: "Disattiva" })).toBeInTheDocument();
   const patches = calls.filter((call) => call.key === `PATCH /api/admin/users/${mario.id}`);
   expect(patches.map((call) => call.body)).toEqual([{ is_active: false }, { is_active: true }]);
 });
 
-it("SPEC-2026-11-06-fase-1-fondazioni/AC-019: deactivating themself shows the 409 error and the admin stays active", async () => {
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-017: cancelling the confirmation sends nothing and the user stays active", async () => {
+  browserLanguages(["en-US"]);
+  const calls = adminRoutes([anna, mario]);
+  await openUsersPage("Users");
+
+  fireEvent.click(within(await rowOf("mario")).getByRole("button", { name: "Deactivate" }));
+  const dialog = await screen.findByRole("dialog", {
+    name: "Deactivate mario? All their sessions will be closed.",
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(within(await rowOf("mario")).getByText("Active")).toBeInTheDocument();
+  expect(calls.map((call) => call.key)).not.toContain(`PATCH /api/admin/users/${mario.id}`);
+});
+
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-019: the admin's own row has no Deactivate button", async () => {
   browserLanguages(["it-IT"]);
-  adminRoutes([anna, mario], { [`PATCH /api/admin/users/${anna.id}`]: apiError(409, "cannot_deactivate_self") });
+  adminRoutes([anna, mario]);
   await openUsersPage("Utenti");
 
-  fireEvent.click(within(await rowOf("anna")).getByRole("button", { name: "Disattiva" }));
-
-  expect(await screen.findByRole("alert")).toHaveTextContent("Non puoi disattivare il tuo utente.");
-  expect(within(await rowOf("anna")).getByText("Attivo")).toBeInTheDocument();
+  const own = await rowOf("anna");
+  expect(within(own).getByText("Attivo")).toBeInTheDocument();
+  expect(within(own).queryByRole("button", { name: "Disattiva" })).not.toBeInTheDocument();
+  expect(within(own).getByRole("button", { name: "Reimposta password" })).toBeInTheDocument();
+  expect(within(await rowOf("mario")).getByRole("button", { name: "Disattiva" })).toBeInTheDocument();
 });
 
 it("SPEC-2026-11-06-fase-1-fondazioni/AC-018: the admin resets the password of a user", async () => {
@@ -279,4 +304,46 @@ it("SPEC-2026-11-06-fase-1-fondazioni/AC-018: the reset form can be closed witho
 
   expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
   expect(calls.map((call) => call.key)).not.toContain(`PUT /api/admin/users/${mario.id}/password`);
+});
+
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-018: resetting their own password sends the admin to the login page", async () => {
+  browserLanguages(["it-IT"]);
+  const calls = adminRoutes([anna, mario], {
+    [`PUT /api/admin/users/${anna.id}/password`]: noContent,
+    "POST /api/auth/logout": apiError(401, "not_authenticated"),
+  });
+  await openUsersPage("Utenti");
+
+  fireEvent.click(within(await rowOf("anna")).getByRole("button", { name: "Reimposta password" }));
+  fireEvent.change(screen.getByLabelText("Nuova password"), { target: { value: "brand-new-password-42" } });
+  fireEvent.click(screen.getByRole("button", { name: "Salva password" }));
+
+  expect(await screen.findByRole("button", { name: "Accedi" })).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "La tua password è stata reimpostata: accedi di nuovo con la nuova password.",
+  );
+  expect(screen.queryByRole("heading", { name: "Utenti" })).not.toBeInTheDocument();
+  expect(within(screen.getByRole("banner")).queryByText("anna")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(calls.find((call) => call.key === `PUT /api/admin/users/${anna.id}/password`)?.body).toEqual({
+    password: "brand-new-password-42",
+  });
+});
+
+it("SPEC-2026-11-06-fase-1-fondazioni/AC-018: in English the sign-in-again message is in English", async () => {
+  browserLanguages(["en-US"]);
+  adminRoutes([anna], {
+    [`PUT /api/admin/users/${anna.id}/password`]: noContent,
+    "POST /api/auth/logout": apiError(401, "not_authenticated"),
+  });
+  await openUsersPage("Users");
+
+  fireEvent.click(within(await rowOf("anna")).getByRole("button", { name: "Reset password" }));
+  fireEvent.change(screen.getByLabelText("New password"), { target: { value: "brand-new-password-42" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save password" }));
+
+  expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Your password has been reset: sign in again with the new password.",
+  );
 });
