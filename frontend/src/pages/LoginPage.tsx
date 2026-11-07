@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -9,6 +9,8 @@ export function LoginPage() {
   const { t } = useTranslation();
   const { login } = useAuth();
   const navigate = useNavigate();
+  // A page that ended the session may send a message to show here (an i18n key), e.g. after an own password reset.
+  const notice = (useLocation().state as { notice?: unknown } | null)?.notice;
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +32,7 @@ export function LoginPage() {
   return (
     <main>
       <h2>{t("login.title")}</h2>
+      {typeof notice === "string" && <p role="status">{t(notice)}</p>}
       <form onSubmit={(event) => void submit(event)}>
         <label htmlFor="login-username">{t("login.username")}</label>
         <input

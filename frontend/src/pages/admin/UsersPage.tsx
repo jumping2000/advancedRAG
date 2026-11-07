@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 
 import { api, ApiError } from "../../api/client";
-import type { User } from "../../auth/AuthContext";
+import { useAuth, type User } from "../../auth/AuthContext";
 
 type Role = User["role"];
 
@@ -10,9 +11,12 @@ function codeOf(caught: unknown): string {
   return caught instanceof ApiError ? caught.code : "unknown";
 }
 
-/** Users page of the admin (REQ-007, REQ-012): create, deactivate or reactivate, reset the password. */
+/** Users page of the admin (REQ-007, REQ-012): create, deactivate (after a confirmation) or reactivate, reset the
+ * password. The admin's own row has no Deactivate button; resetting the own password ends the own session. */
 export function UsersPage() {
   const { t } = useTranslation();
+  const { user: me, logout } = useAuth();
+  const navigate = useNavigate();
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -21,6 +25,7 @@ export function UsersPage() {
   const [role, setRole] = useState<Role>("user");
   const [resetting, setResetting] = useState<User | null>(null);
   const [newPassword, setNewPassword] = useState("");
+  const [confirming, setConfirming] = useState<User | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -68,6 +73,13 @@ export function UsersPage() {
     void run(async () => replace(await api.patch<User>(`/admin/users/${user.id}`, { is_active: isActive })));
   }
 
+  function confirmDeactivation() {
+    if (!confirming) return;
+    const user = confirming;
+    setConfirming(null);
+    setActive(user, false);
+  }
+
   function openReset(user: User) {
     setError(null);
     setNotice(null);
@@ -81,6 +93,12 @@ export function UsersPage() {
     const user = resetting;
     void run(async () => {
       await api.put<void>(`/admin/users/${user.id}/password`, { password: newPassword });
+      if (user.id === me?.id) {
+        // The reset ended every session of the admin, this one included: sign in again with the new password.
+        await logout().catch(() => undefined);
+        navigate("/login", { replace: true, state: { notice: "users.signInAgain" } });
+        return;
+      }
       setResetting(null);
       setNewPassword("");
       setNotice(t("users.passwordReset", { username: user.username }));
@@ -143,9 +161,17 @@ export function UsersPage() {
               <td>{t(`users.roles.${user.role}`)}</td>
               <td>{user.is_active ? t("users.active") : t("users.inactive")}</td>
               <td>
-                <button type="button" onClick={() => setActive(user, !user.is_active)}>
-                  {user.is_active ? t("users.deactivate") : t("users.reactivate")}
-                </button>
+                {!user.is_active ? (
+                  <button type="button" onClick={() => setActive(user, true)}>
+                    {t("users.reactivate")}
+                  </button>
+                ) : (
+                  user.id !== me?.id && (
+                    <button type="button" onClick={() => setConfirming(user)}>
+                      {t("users.deactivate")}
+                    </button>
+                  )
+                )}
                 <button type="button" onClick={() => openReset(user)}>
                   {t("users.resetPassword")}
                 </button>
@@ -154,6 +180,18 @@ export function UsersPage() {
           ))}
         </tbody>
       </table>
+
+      {confirming && (
+        <div role="dialog" aria-modal="true" aria-labelledby="users-confirm-text">
+          <p id="users-confirm-text">{t("users.confirmDeactivate", { username: confirming.username })}</p>
+          <button type="button" onClick={confirmDeactivation}>
+            {t("users.deactivate")}
+          </button>
+          <button type="button" onClick={() => setConfirming(null)}>
+            {t("users.cancel")}
+          </button>
+        </div>
+      )}
 
       {resetting && (
         <form onSubmit={resetPassword}>

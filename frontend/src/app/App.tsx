@@ -64,7 +64,9 @@ export function App() {
   return (
     <I18nextProvider i18n={i18n}>
       <AuthProvider>
-        <BrowserRouter>
+        {/* No transitions: a navigation and a sign-out issued together render together (the login page keeps the
+            message an own password reset sends with the navigation). */}
+        <BrowserRouter useTransitions={false}>
           <Layout />
         </BrowserRouter>
       </AuthProvider>
