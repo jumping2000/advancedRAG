@@ -102,6 +102,14 @@ class DocumentRepository:
             delete_chunks=True,
         )
 
+    async def mark_unsupported(self, document_id: uuid.UUID, code: str, message: str) -> bool:
+        """Skeleton: PROCESSING -> UNSUPPORTED is not written yet."""
+        return False
+
+    async def requeue(self, kb_id: uuid.UUID, document_id: uuid.UUID) -> Document | None:
+        """Skeleton: FAILED -> QUEUED is not written yet."""
+        return None
+
     async def _finish(self, document_id: uuid.UUID, *, delete_chunks: bool = False, **values: str | int) -> bool:
         reason = {"status_reason_code": None, "status_reason_message": None}
         try:

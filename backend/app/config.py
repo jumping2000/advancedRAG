@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     # The embedding texts go to Ollama in groups of this size, each request with this timeout (REQ-012).
     embedding_batch_size: int = Field(default=16, ge=1)
     embedding_timeout_seconds: float = Field(default=120, gt=0)
+    # Docling (REQ-008): the key is sent as X-Api-Key when set; one conversion waits at most this long.
+    docling_api_key: SecretStr | None = None
+    docling_timeout_seconds: float = 600
+    # Temporary errors of Docling or Ollama repeat the step up to this many attempts in all, waiting this long (then
+    # double) between them (REQ-016).
+    ingestion_max_attempts: int = 3
+    ingestion_retry_backoff_seconds: float = 10
+    # A document with fewer non-white characters than this is UNSUPPORTED (REQ-009).
+    min_extracted_chars: int = 50
     chunk_target_words: int = 300
     chunk_min_words: int = 50
     chunk_max_words: int = 450
