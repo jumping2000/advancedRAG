@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # Docling (REQ-008): the key is sent as X-Api-Key when set; one conversion waits at most this long.
     docling_api_key: SecretStr | None = None
     docling_timeout_seconds: float = Field(default=600, gt=0)
+    docling_include_images: bool = False
     # Temporary errors of Docling or Ollama repeat the step up to this many attempts in all, waiting this long (then
     # double) between them (REQ-016).
     ingestion_max_attempts: int = Field(default=3, ge=1)
