@@ -91,18 +91,24 @@ def _read_markdown(lines: list[str]) -> list[Block]:
 def _front_matter_end(lines: list[str]) -> int:
     """Number of lines of a YAML front matter at the very top, 0 when there is none.
 
-    It opens with `---` on the first line and closes with `---` or `...` within the first 200 lines; every line in
-    between must look like YAML (see `_looks_like_yaml`), otherwise the text is ordinary Markdown: a leading rule
+    It opens with `---` on the first line and closes with `---` or `...` within the first 200 lines. Every line in
+    between must look like YAML (see `_looks_like_yaml`), the first line that is not blank or a comment must be a
+    `key: value` line, and there must be at least one: otherwise the text is ordinary Markdown, so a leading rule
     followed by another one later must not swallow the headings in between.
     """
     if not lines or lines[0].rstrip() != "---":
         return 0
+    has_key = False
     for index in range(1, min(len(lines), _FRONT_MATTER_MAX_LINES)):
         line = lines[index].rstrip()
         if line in ("---", "..."):
-            return index + 1
+            return index + 1 if has_key else 0
         if not _looks_like_yaml(line):
             return 0
+        if not has_key and line and not line.startswith("#"):
+            if not _is_key_line(line):
+                return 0
+            has_key = True
     return 0
 
 
@@ -110,8 +116,15 @@ def _looks_like_yaml(line: str) -> bool:
     """A blank, comment, indented, list or `key: value` line (the line has no trailing white space)."""
     if not line or line[0] in " \t#" or line == "-" or line.startswith("- "):
         return True
+    return _is_key_line(line)
+
+
+def _is_key_line(line: str) -> bool:
+    """A `key: value` or `key:` line that is not indented."""
+    if line.startswith("- "):
+        return False
     key, colon, rest = line.partition(":")
-    return bool(colon) and bool(key.strip()) and (not rest or rest[0] in " \t")
+    return bool(colon) and bool(key.strip()) and key[0] not in " \t" and (not rest or rest[0] in " \t")
 
 
 def _fence_opening(line: str) -> tuple[str, int] | None:
