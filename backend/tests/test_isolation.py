@@ -218,13 +218,14 @@ async def test_AC_023_the_repository_filters_in_one_sql_query_joined_with_kb_mem
 async def test_AC_023_a_role_other_than_admin_is_filtered_like_a_user(world: World, session: AsyncSession) -> None:
     """Fail closed: only the admin role reads every KB, whatever else the role holds."""
     repository = KnowledgeBaseRepository(session)
-    mario = await user_named(session, "mario")
     stranger = User(id=uuid.uuid4(), username="stranger", password_hash="x", role="ADMIN", is_active=True)
+    # Objects outside the session: the database itself refuses such roles (users_role_check).
+    mario = User(id=world.mario, username="mario", password_hash="x", role="Admin", is_active=True)
 
     assert await repository.list_for(stranger) == []
     assert await repository.get_for(stranger, world.a) is None
-    mario.role = "Admin"
     assert [kb.id for kb in await repository.list_for(mario)] == [world.a]
+    assert await repository.get_for(mario, world.b) is None
 
 
 async def test_AC_023_a_user_removed_from_a_kb_no_longer_lists_it(
