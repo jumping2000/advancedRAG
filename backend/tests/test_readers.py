@@ -296,3 +296,53 @@ def test_AC_018_every_table_has_its_own_delimiter_row() -> None:
         Block("table_row", "b"),
         Block("table_row", "c"),
     ]
+
+
+def test_AC_018_a_block_between_two_rules_with_only_a_heading_is_not_front_matter() -> None:
+    assert md("---\n# Titolo\n---\n\nTesto") == [
+        Block("paragraph", "---"),
+        Block("heading", "Titolo", level=1),
+        Block("paragraph", "---"),
+        Block("paragraph", "Testo"),
+    ]
+
+
+def test_AC_018_the_heading_between_two_rules_keeps_its_section_title_in_the_chunks() -> None:
+    chunks = chunk_blocks(normalize_blocks(md("---\n# Titolo\n---\n\nTesto")), DEFAULTS)
+
+    assert [(c.section_title, c.content) for c in chunks] == [(None, "---"), ("Titolo", "---\n\nTesto")]
+
+
+def test_AC_018_a_block_with_only_comments_and_list_items_is_not_front_matter() -> None:
+    assert md("---\n# solo commento\n- voce\n---") == [
+        Block("paragraph", "---"),
+        Block("heading", "solo commento", level=1),
+        Block("paragraph", "- voce\n---"),
+    ]
+
+
+def test_AC_018_a_block_without_any_line_is_not_front_matter() -> None:
+    assert md("---\n\n---\n\n# Titolo") == [
+        Block("paragraph", "---"),
+        Block("paragraph", "---"),
+        Block("heading", "Titolo", level=1),
+    ]
+
+
+def test_AC_018_the_first_line_that_is_not_blank_or_a_comment_must_be_a_key() -> None:
+    assert md("---\n- voce\n# Titolo\nchiave: v\n---") == [
+        Block("paragraph", "---\n- voce"),
+        Block("heading", "Titolo", level=1),
+        Block("paragraph", "chiave: v\n---"),
+    ]
+    assert md("---\n  rientrata: x\n# Titolo\nchiave: v\n---") == [
+        Block("paragraph", "---\n  rientrata: x"),
+        Block("heading", "Titolo", level=1),
+        Block("paragraph", "chiave: v\n---"),
+    ]
+
+
+def test_AC_018_comments_before_the_first_key_are_still_front_matter() -> None:
+    front = "---\n# commento\n\n# altro commento\nchiave: v\n---"
+
+    assert md(f"{front}\n\n# Titolo") == [Block("paragraph", front), Block("heading", "Titolo", level=1)]
