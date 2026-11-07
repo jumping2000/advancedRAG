@@ -28,9 +28,9 @@ seconds) every 10 seconds; `python -m app.worker --healthcheck`, the Compose hea
 host exists and 1 otherwise. A job (`process_document_job`) takes a document from QUEUED to PROCESSING in one statement
 (no QUEUED row: it ends quietly), then reads it: a PDF, DOCX, PPTX or XLSX goes to Docling (`DoclingClient`: `POST
 {DOCLING_BASE_URL}/v1/convert/file`, multipart field `files` named `<document id>.<format>`, form fields `from_formats`
-= the format, `to_formats` = `json`, `do_ocr` = `false`, header `X-Api-Key` only when `DOCLING_API_KEY` is set, timeout
+= the format, `to_formats` = `json`, `do_ocr` = `false`, `include_images` = `false` (`DOCLING_INCLUDE_IMAGES`), header `X-Api-Key` only when `DOCLING_API_KEY` is set, timeout
 `DOCLING_TIMEOUT_SECONDS`, 600) and its `document.json_content` (a DoclingDocument) becomes blocks: headings with their
-level, paragraphs, one block per table row (cells joined by " | "), the page of each from `prov[].page_no`; the runs of
+level, paragraphs, one block per table row (cells joined by " | "; a table without `data.grid` is rebuilt from `data.table_cells`), the page of each from `prov[].page_no`; the runs of
 an inline group are one paragraph; pictures and the furniture layer (headers, footers) are left out. A TXT or MD is read
 directly as UTF-8. The text is normalized; if fewer than `MIN_EXTRACTED_CHARS` (50) characters that are not white remain
 (or nothing that can be chunked), the document becomes UNSUPPORTED `no_text_extracted` and its original is deleted at
@@ -49,6 +49,7 @@ repeated. The reasons (`status_reason.code`, with its fixed message):
 |---|---|---|
 | `docling_unreachable` | FAILED | Docling refuses the connection, times out or hangs up, on every attempt |
 | `docling_error` | FAILED | Docling answers 5xx or 429 on every attempt, or an answer that is not a conversion |
+| `docling_error` (refused key) | FAILED | Docling answers 401 or 403: "The document parsing service refused the request: check DOCLING_API_KEY", at once, the original stays |
 | `parse_failed` | FAILED | Docling refuses the file (any other 4xx, or `status: failure`), or a TXT/MD is not UTF-8 |
 | `no_text_extracted` | UNSUPPORTED | too little text after the normalization (original deleted at once) |
 | `embedding_unreachable` | FAILED | Ollama refuses the connection, times out or hangs up, on every attempt |
@@ -58,7 +59,9 @@ repeated. The reasons (`status_reason.code`, with its fixed message):
 | `verification_failed` | FAILED | the vector or the BM25 index did not return every saved chunk (the chunks are deleted) |
 | `unexpected_error` | FAILED | anything else: a bug, a database error, a missing original, the 3600 s timeout of the job |
 
-The messages never carry the content, a file name or what the other service said. Logs carry the document id, the status,
+A Docling `partial_success` is accepted and the document goes on; the worker logs one warning with the document id and
+the number of errors Docling reported, never their text. The messages never carry the content, a file name or what the
+other service said. Logs carry the document id, the status,
 the reason code, the step (`docling`, `embeddings`) and the attempt number, never content, file names, vectors or
 exception messages (REQ-102).
 
@@ -128,7 +131,8 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   `EMBEDDING_BATCH_SIZE` (16, at least 1) and `EMBEDDING_TIMEOUT_SECONDS` (120, above 0) for the worker, and, only for
   the worker (the backend does not receive them), `DOCLING_API_KEY` (a secret, empty in `.env.example`; blank means no key),
   `DOCLING_TIMEOUT_SECONDS` (600, above 0), `INGESTION_MAX_ATTEMPTS` (3, at least 1), `INGESTION_RETRY_BACKOFF_SECONDS`
-  (10, 0 or more) and `MIN_EXTRACTED_CHARS` (50, 0 or more).
+  (10, 0 or more), `MIN_EXTRACTED_CHARS` (50, 0 or more) and `DOCLING_INCLUDE_IMAGES` (false: Docling is not asked to
+  extract images; an interface switch for it is deferred to the settings page of phase 4).
 - The retry route (phase 2, T-05) is the second POST without a JSON body: a POST with no `Content-Type` passes
   `require_json`, so the UI presses the button with a plain `fetch` POST. It checks the original with `UploadStorage`
   before it requeues (`DocumentRepository.requeue` changes FAILED to QUEUED in one statement, so two simultaneous
@@ -353,6 +357,18 @@ erDiagram
   per test; e2e tests (`-m e2e`) build the full stack under their own Compose project and ports and remove it with
   `down -v`; the UI e2e uses Playwright with Chromium (`playwright install chromium` in CI,
   `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for a Chromium already on the machine).
+
+### Known limits of the ingestion (phase 2, T-05)
+- A garbage file for which docling-serve answers 500 is repeated 3 times and ends `docling_error`, not `parse_failed`
+  (the worker cannot tell it from a server that is down).
+- Merged table cells repeat their text in every row they span, and the " | " separators count toward
+  `MIN_EXTRACTED_CHARS`.
+- Captions that can only be reached through the children of a picture are not read (pictures are skipped).
+- The shape of Docling's answer rests on its documentation and on fixtures: run the live smoke tests once by hand
+  (`LIVE_SERVICES=1`, marker `live`) before using the system, and try a table, a PPTX, an XLSX and a corrupt PDF.
+- Three attempts of up to `DOCLING_TIMEOUT_SECONDS` (600 s) plus the waits can reach the 3600 s timeout of the job; keep
+  `INGESTION_MAX_ATTEMPTS` small. docling-serve has its own limit for a synchronous conversion
+  (`DOCLING_SERVE_MAX_SYNC_WAIT` on the server) that can answer 504 before the client timeout: raise it with the client.
 
 ## Characterization tests
 - none: the area was built from the spec (greenfield); its acceptance tests are listed under References.
