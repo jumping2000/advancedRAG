@@ -3,20 +3,30 @@
 GET /kbs and GET /kbs/{kb_id} answer every signed-in user with the KBs visible to them (all for the admin); the other
 routes are for the admin only, with the role checked before the ids and the body (403 for a user, whatever it sends).
 A kb_id that is not a UUID, an unknown KB and a KB the user is not assigned to get the same 404 kb_not_found.
+
+Deleting a KB reads the ids of its documents first, deletes the KB (documents and chunks go by cascade, so a job that is
+processing one of them writes nothing) and then removes the originals of those ids, best effort: a file that cannot be
+removed is logged by the document id and the type of the error, and the hourly sweep of the worker deletes it later.
 """
 
+import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 from app.auth.deps import ApiError, CurrentUser, DbSession, require_admin
 from app.auth.routes import UserOut
+from app.config import Settings
 from app.db.models import User
+from app.documents.repository import DocumentRepository
+from app.documents.storage import UploadStorage
 from app.knowledge_bases.repository import KbNameTaken, KnowledgeBaseRepository
 from app.knowledge_bases.schemas import KnowledgeBaseCreateIn, KnowledgeBaseOut, KnowledgeBaseUpdateIn
 from app.users.routes import parse_user_id
 from app.users.service import user_not_found
+
+logger = logging.getLogger(__name__)
 
 Admin = Annotated[User, Depends(require_admin)]
 ADMIN_ONLY = [Depends(require_admin)]
@@ -88,9 +98,22 @@ async def update_kb(kb_id: str, body: KnowledgeBaseUpdateIn, kbs: Repository) ->
 
 
 @router.delete("/{kb_id}", status_code=204, response_class=Response, dependencies=ADMIN_ONLY)
-async def delete_kb(kb_id: str, kbs: Repository) -> None:
-    if not await kbs.delete(parse_kb_id(kb_id)):
+async def delete_kb(request: Request, kb_id: str, admin: Admin, kbs: Repository) -> None:
+    found_kb = await visible_kb_id(kb_id, admin, kbs)
+    document_ids = await DocumentRepository(kbs.session).ids_for_kb(found_kb)
+    if not await kbs.delete(found_kb):
         raise kb_not_found()
+    settings: Settings = request.app.state.settings
+    storage = UploadStorage(settings.upload_dir)
+    for document_id in document_ids:
+        try:
+            storage.remove(document_id)
+        except OSError as error:
+            logger.warning(
+                "delete of a KB: the original of document %s could not be removed (%s)",
+                document_id,
+                type(error).__name__,
+            )
 
 
 @router.get("/{kb_id}/members", dependencies=ADMIN_ONLY)

@@ -11,7 +11,8 @@ and `pg_search` extensions). `backend` and `worker` run the same image (built on
 `/data/uploads`. The worker gets only the common part of the environment (database, Redis, Ollama, Docling, `UPLOAD_DIR`
 and the `EMBEDDING_*` and `CHUNK_*` settings), through a YAML anchor in `compose.yaml`: the admin account, the sessions,
 the upload limit and the health timeout stay with the backend. The worker starts after the backend is healthy (the
-backend applies the migrations). Nginx serves the compiled React frontend and proxies `/api/` to the
+backend applies the migrations) and has `stop_grace_period: 120s`: a stop lets the job in progress finish for two
+minutes (RQ's warm shutdown), a longer job is killed and its document is recovered by the next start (see below). Nginx serves the compiled React frontend and proxies `/api/` to the
 backend (the proxy lines live in `nginx/api-proxy.conf`, included by both server templates), always overwriting
 `X-Forwarded-Proto` with its own scheme. The request body limit is 1 MB, except for the document upload
 `/api/kbs/{id}/documents`, where it is `MAX_UPLOAD_SIZE_MB` + 1 MB and a request above it gets 413 with the JSON error
@@ -19,7 +20,8 @@ body `file_too_large` (phase 2, T-01). HTTPS is on only when the stack starts wi
 `compose.tls.yaml` (which publishes `HTTPS_PORT`, default 443, and passes it to Nginx) **and** `nginx/certs/` holds
 both `cert.pem` and `key.pem`: then HTTP answers 301 to `https://`. Any other combination stays HTTP only, and the
 entrypoint logs why (missing file, or `HTTPS_PORT not set`). At startup the backend (`python -m app.run`) applies the
-Alembic migrations, creates the first admin from `ADMIN_USERNAME`/`ADMIN_PASSWORD` when no active admin exists, then
+Alembic migrations (`fileConfig(..., disable_existing_loggers=False)` in `migrations/env.py`, so that running them in
+the process does not silence the loggers created before), creates the first admin from `ADMIN_USERNAME`/`ADMIN_PASSWORD` when no active admin exists, then
 starts uvicorn. Ollama and Docling are external: `GET /api/health` reports them but they never block the startup.
 
 The worker (`app/worker.py`) runs the jobs of the RQ queue `ingestion` one at a time with `rq.SimpleWorker` (no fork per
@@ -37,8 +39,28 @@ directly as UTF-8. The text is normalized; if fewer than `MIN_EXTRACTED_CHARS` (
 once. Otherwise Ollama gives the vectors in groups of `EMBEDDING_BATCH_SIZE` (16) texts (timeout
 `EMBEDDING_TIMEOUT_SECONDS`, 120), the chunks are saved in one transaction, both indexes are checked, and the document
 is marked READY with its `chunk_count` and its original is deleted. Any failure makes the document FAILED with a code
-and a fixed English message and no chunk, and keeps the original (for `FAILED_ORIGINAL_RETENTION_DAYS` days, cleanup in
-T-06) so that the admin can retry.
+and a fixed English message and no chunk, and keeps the original for `FAILED_ORIGINAL_RETENTION_DAYS` days (7) so that the
+admin can retry.
+
+Before the worker accepts its first job (`startup` in `app/worker.py`, the heartbeat is already beating) it recovers
+and cleans, three independent steps of `app/ingestion/cleanup.py`: a failure of one is logged by the type of the error
+and the others and the worker go on. `recover_interrupted` turns every document left PROCESSING (only a worker that died
+can leave one: there is one worker) into FAILED `unexpected_error` "Processing was interrupted" through
+`DocumentRepository.mark_failed`, which deletes its chunks; the original is kept, so the admin can retry.
+`requeue_pending` puts every QUEUED document on the queue again (a retry whose enqueue failed, a lost job); a document
+that already has a job just gets a second one, and the claim at the start of the job lets only one work.
+`cleanup_originals` deletes files only, never a row or a chunk: the original of a FAILED document more than
+`FAILED_ORIGINAL_RETENTION_DAYS` days after it failed (`documents.updated_at`, the FAILED transition; a retry that
+fails again starts the time again; the document stays FAILED with its reason), and every file of `UPLOAD_DIR` that has
+no document and was last written more than one hour ago (a `{id}.part` of an upload that never finished and a file whose
+name is not an id included). The original of a QUEUED or PROCESSING document is never deleted. The same cleanup then
+runs every hour in a daemon thread (`worker-cleanup`, an event loop per run).
+
+A document deleted while a job processes it (REQ-019) is not resurrected: `persist_chunks` locks the document row and
+raises `DocumentGone` when it is gone (the delete waits for that lock and takes the chunks with it by cascade), the
+READY, UNSUPPORTED and FAILED marks change only a PROCESSING row, and the original is removed by the delete itself, so
+a job that finds neither the row nor the file ends quietly and writes nothing. A job that exceeds the 3600 s timeout of
+the queue (`JobTimeoutException`) ends FAILED `unexpected_error` "The processing time limit was exceeded".
 
 Attempts (REQ-016, `app/ingestion/retry.py`): the Docling call and each group of embeddings are repeated on their own,
 only after a temporary error (connection refused, timeout, 5xx, 429), up to `INGESTION_MAX_ATTEMPTS` (3) attempts in
@@ -57,7 +79,7 @@ repeated. The reasons (`status_reason.code`, with its fixed message):
 | `embedding_invalid_response` | FAILED | a wrong number of vectors, a vector that is empty, ragged, not made of numbers or holding NaN or infinity |
 | `embedding_dimension_mismatch` | FAILED | well formed vectors whose size is not `EMBEDDING_DIMENSIONS` (the profile's) |
 | `verification_failed` | FAILED | the vector or the BM25 index did not return every saved chunk (the chunks are deleted) |
-| `unexpected_error` | FAILED | anything else: a bug, a database error, a missing original, the 3600 s timeout of the job |
+| `unexpected_error` | FAILED | anything else: a bug, a database error, a missing original; the 3600 s timeout of the job ("The processing time limit was exceeded"); a worker that died in the middle of the document ("Processing was interrupted", set at the next start) |
 
 A Docling `partial_success` is accepted and the document goes on; the worker logs one warning with the document id and
 the number of errors Docling reported, never their text. The messages never carry the content, a file name or what the
@@ -100,8 +122,9 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 | `GET /api/kbs/{kb_id}` | session | 200 `KnowledgeBaseOut` | 404 `kb_not_found` (not assigned, unknown, not a UUID) |
 | `POST /api/kbs` `{"name", "description"?}` | admin | 201 `KnowledgeBaseOut` | 409 `kb_name_taken`; 422 `validation_error` |
 | `PATCH /api/kbs/{kb_id}` `{"name"?, "description"?}` | admin | 200 `KnowledgeBaseOut` (only the fields sent change; `"description": null` or a blank one clears it) | 404 `kb_not_found`; 409 `kb_name_taken`; 422 `validation_error` (also `"name": null`) |
-| `DELETE /api/kbs/{kb_id}` | admin | 204 (assignments removed by cascade) | 404 `kb_not_found` |
+| `DELETE /api/kbs/{kb_id}` | admin | 204 (assignments, documents and chunks removed by cascade; the originals of its documents are removed right after, best effort: a file that cannot be removed is logged by document id and error type, and the hourly sweep deletes it) | 404 `kb_not_found` |
 | `POST /api/kbs/{kb_id}/documents/{document_id}/retry` (no body) | admin | 202 `DocumentOut` in QUEUED, without reason, and a new job on the queue (phase 2, T-05) | 404 `kb_not_found`, `document_not_found`; 409 `not_retryable` (the document is not FAILED, also for the second of two simultaneous presses), 409 `original_missing` (FAILED, but the original was deleted) |
+| `DELETE /api/kbs/{kb_id}/documents/{document_id}` | admin | 204: the document, its chunks (cascade) and its original are removed at once, in any state, also PROCESSING (phase 2, T-06) | 404 `kb_not_found`, `document_not_found` (unknown, not a UUID or of another KB, the same body) |
 | `GET /api/kbs/{kb_id}/members` | admin | 200 `[UserOut]`, ordered by `lower(username)` | 404 `kb_not_found` |
 | `PUT /api/kbs/{kb_id}/members/{user_id}` | admin | 204 (idempotent: one row, also under concurrency; inactive users accepted) | 404 `kb_not_found`, then 404 `user_not_found` (also for a non-UUID id) |
 | `DELETE /api/kbs/{kb_id}/members/{user_id}` | admin | 204 (also when the user was not assigned) | 404 `kb_not_found`, then 404 `user_not_found` |
@@ -131,13 +154,17 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   `EMBEDDING_BATCH_SIZE` (16, at least 1) and `EMBEDDING_TIMEOUT_SECONDS` (120, above 0) for the worker, and, only for
   the worker (the backend does not receive them), `DOCLING_API_KEY` (a secret, empty in `.env.example`; blank means no key),
   `DOCLING_TIMEOUT_SECONDS` (600, above 0), `INGESTION_MAX_ATTEMPTS` (3, at least 1), `INGESTION_RETRY_BACKOFF_SECONDS`
-  (10, 0 or more), `MIN_EXTRACTED_CHARS` (50, 0 or more) and `DOCLING_INCLUDE_IMAGES` (false: Docling is not asked to
+  (10, 0 or more), `MIN_EXTRACTED_CHARS` (50, 0 or more), `FAILED_ORIGINAL_RETENTION_DAYS` (7, at least 1: how long the original of a FAILED
+  document is kept after it failed) and `DOCLING_INCLUDE_IMAGES` (false: Docling is not asked to
   extract images; an interface switch for it is deferred to the settings page of phase 4).
 - The retry route (phase 2, T-05) is the second POST without a JSON body: a POST with no `Content-Type` passes
   `require_json`, so the UI presses the button with a plain `fetch` POST. It checks the original with `UploadStorage`
   before it requeues (`DocumentRepository.requeue` changes FAILED to QUEUED in one statement, so two simultaneous
-  requests queue the document once), and a failure to reach Redis after that leaves the document QUEUED (T-06's
-  start-up recovery puts QUEUED documents without a job back on the queue).
+  requests queue the document once), and a failure to reach Redis after that leaves the document QUEUED (the
+  start-up of the worker puts QUEUED documents without a job back on the queue).
+- All five document routes (upload, list, detail, retry, delete) sit behind the router-level `require_admin`: a `user`,
+  assigned to the KB or not, gets the same 403 whatever the ids and the body, and a request without a session 401 (phase
+  2, T-06, AC-012).
 
 ## Diagrams
 
@@ -358,7 +385,7 @@ erDiagram
   `down -v`; the UI e2e uses Playwright with Chromium (`playwright install chromium` in CI,
   `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for a Chromium already on the machine).
 
-### Known limits of the ingestion (phase 2, T-05)
+### Known limits of the ingestion (phase 2, T-05 and T-06)
 - A garbage file for which docling-serve answers 500 is repeated 3 times and ends `docling_error`, not `parse_failed`
   (the worker cannot tell it from a server that is down).
 - Merged table cells repeat their text in every row they span, and the " | " separators count toward
@@ -369,6 +396,11 @@ erDiagram
 - Three attempts of up to `DOCLING_TIMEOUT_SECONDS` (600 s) plus the waits can reach the 3600 s timeout of the job; keep
   `INGESTION_MAX_ATTEMPTS` small. docling-serve has its own limit for a synchronous conversion
   (`DOCLING_SERVE_MAX_SYNC_WAIT` on the server) that can answer 504 before the client timeout: raise it with the client.
+- There is one worker (phase 2, T-06): a second worker starting while the first is processing a document would make that
+  document FAILED "Processing was interrupted" (the start-up cannot tell its own dead predecessor from a live peer), so
+  the `worker` service is not scaled.
+- The hourly sweep deletes every file of `UPLOAD_DIR` that is older than an hour and has no document, whatever its name:
+  the folder is the `uploads` volume and holds nothing else.
 
 ## Characterization tests
 - none: the area was built from the spec (greenfield); its acceptance tests are listed under References.
@@ -379,7 +411,8 @@ erDiagram
 - Stack: [compose.yaml](../../compose.yaml), [compose.tls.yaml](../../compose.tls.yaml),
   [nginx/entrypoint-tls.sh](../../nginx/entrypoint-tls.sh), [backend/app/run.py](../../backend/app/run.py),
   [backend/app/api/health.py](../../backend/app/api/health.py).
-- Worker (phase 2, T-04 and T-05): [worker.py](../../backend/app/worker.py), [jobs.py](../../backend/app/ingestion/jobs.py),
+- Worker (phase 2, T-04 to T-06): [worker.py](../../backend/app/worker.py), [cleanup.py](../../backend/app/ingestion/cleanup.py),
+  [jobs.py](../../backend/app/ingestion/jobs.py),
   [pipeline.py](../../backend/app/ingestion/pipeline.py), [embeddings.py](../../backend/app/ingestion/embeddings.py),
   [docling.py](../../backend/app/ingestion/docling.py), [retry.py](../../backend/app/ingestion/retry.py),
   [errors.py](../../backend/app/ingestion/errors.py), [routes.py of the documents](../../backend/app/documents/routes.py).
@@ -398,5 +431,5 @@ erDiagram
 - Tests: `backend/tests/` (`test_isolation.py`, `test_knowledge_bases.py`, `test_users.py`, `test_auth.py`, ...),
   `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`), `frontend/src/**/*.test.tsx`;
   phase 2, T-05: `test_docling.py`, `test_retry.py`, `test_pipeline_errors.py`, `test_retry_route.py`,
-  `test_logging_privacy.py` and the opt-in `tests/live/test_live_services.py` (`LIVE_SERVICES=1`, marker `live`, never in
+  `test_logging_privacy.py`; phase 2, T-06: `test_cleanup.py`, `test_document_delete.py`, `test_worker_recovery.py`; and the opt-in `tests/live/test_live_services.py` (`LIVE_SERVICES=1`, marker `live`, never in
   the default run or in CI: run it once by hand against your real Docling and Ollama).
