@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 
 from app.config import Settings
+from app.ingestion.persist import verify_indexes  # noqa: F401
 
 
 async def process_document(
