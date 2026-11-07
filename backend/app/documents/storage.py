@@ -80,4 +80,11 @@ class UploadStorage:
         if not self.upload_dir.is_dir():
             return []
         cutoff = (now - older_than).timestamp()
-        return sorted(path for path in self.upload_dir.iterdir() if path.is_file() and path.stat().st_mtime < cutoff)
+        found: list[Path] = []
+        for path in self.upload_dir.iterdir():
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    found.append(path)
+            except FileNotFoundError:
+                continue  # renamed (an upload) or removed (a delete) between the listing and the check
+        return sorted(found)

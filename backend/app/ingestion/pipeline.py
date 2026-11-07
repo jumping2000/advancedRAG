@@ -83,6 +83,18 @@ async def process_document(document_id: uuid.UUID, settings: Settings, *, sleep:
         await engine.dispose()
 
 
+async def fail_after_timeout(document_id: uuid.UUID, settings: Settings) -> None:
+    """The job was stopped by the timeout of the queue, which RQ enforces with a signal handler that raises in the main
+    thread: when the event loop is idle (waiting for Docling or Ollama) the exception leaves `asyncio.run` and
+    `process_document` never sees it. The job calls this then; the document, if it is still PROCESSING, is FAILED
+    `unexpected_error` with the message of the time limit (chunks deleted, original kept)."""
+    engine = create_engine(settings.sqlalchemy_url)
+    try:
+        await _fail(engine, document_id, "unexpected_error", _TIMEOUT, "JobTimeoutException")
+    finally:
+        await engine.dispose()
+
+
 async def _process(engine: AsyncEngine, document: Document, settings: Settings, sleep: _Sleep) -> None:
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     storage = UploadStorage(settings.upload_dir)
