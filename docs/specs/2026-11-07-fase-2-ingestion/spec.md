@@ -1,6 +1,6 @@
 # SPEC-2026-11-07-fase-2-ingestion: Fase 2 – Ingestion dei documenti
 
-- Status: approved
+- Status: implemented
 - Owner: jumping2000
 
 ## Problem and goal
