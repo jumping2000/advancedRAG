@@ -1,5 +1,28 @@
 # advancedRAG stack: docker compose up --build (values from .env, see .env.example)
 name: advancedrag
+# Shared by the backend and the worker: they are the same image and read the same settings
+x-backend-environment: &backend-environment
+  DATABASE_URL: postgresql+asyncpg://rag@db:5432/ragdb
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+  REDIS_URL: redis://redis:6379/0
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?set OLLAMA_BASE_URL in .env}
+  DOCLING_BASE_URL: ${DOCLING_BASE_URL:?set DOCLING_BASE_URL in .env}
+  HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-2}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+  SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-480}
+  # Fixed here: the folder is the `uploads` volume, so .env cannot point it elsewhere
+  UPLOAD_DIR: /data/uploads
+  MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+  EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+  EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-16}
+  EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-120}
+  CHUNK_TARGET_WORDS: ${CHUNK_TARGET_WORDS:-300}
+  CHUNK_MIN_WORDS: ${CHUNK_MIN_WORDS:-50}
+  CHUNK_MAX_WORDS: ${CHUNK_MAX_WORDS:-450}
+  CHUNK_OVERLAP_PERCENT: ${CHUNK_OVERLAP_PERCENT:-15}
+
 services:
   db:
     image: paradedb/paradedb:0.26.4-pg17
@@ -25,25 +48,7 @@ services:
 
   backend:
     build: ./backend
-    environment:
-      DATABASE_URL: postgresql+asyncpg://rag@db:5432/ragdb
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      REDIS_URL: redis://redis:6379/0
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?set OLLAMA_BASE_URL in .env}
-      DOCLING_BASE_URL: ${DOCLING_BASE_URL:?set DOCLING_BASE_URL in .env}
-      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-2}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-480}
-      # Fixed here: the folder is the `uploads` volume, so .env cannot point it elsewhere
-      UPLOAD_DIR: /data/uploads
-      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
-      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
-      CHUNK_TARGET_WORDS: ${CHUNK_TARGET_WORDS:-300}
-      CHUNK_MIN_WORDS: ${CHUNK_MIN_WORDS:-50}
-      CHUNK_MAX_WORDS: ${CHUNK_MAX_WORDS:-450}
-      CHUNK_OVERLAP_PERCENT: ${CHUNK_OVERLAP_PERCENT:-15}
+    environment: *backend-environment
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -55,6 +60,25 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=10)"]
       interval: 5s
       timeout: 12s
+      retries: 30
+
+  # The ingestion worker: the image of the backend, the RQ queue `ingestion`, one job at a time. It shares the `uploads`
+  # volume with the backend and publishes no port; it waits for the backend, which applies the migrations.
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment: *backend-environment
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker", "--healthcheck"]
+      interval: 5s
+      timeout: 15s
       retries: 30
 
   nginx:

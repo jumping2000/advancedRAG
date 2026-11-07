@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     embedding_model: str = "bge-m3"
     embedding_dimensions: int = 1024
     # The embedding texts go to Ollama in groups of this size, each request with this timeout (REQ-012).
-    embedding_batch_size: int = 16
-    embedding_timeout_seconds: float = 120
+    embedding_batch_size: int = Field(default=16, ge=1)
+    embedding_timeout_seconds: float = Field(default=120, gt=0)
     chunk_target_words: int = 300
     chunk_min_words: int = 50
     chunk_max_words: int = 450
