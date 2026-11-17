@@ -54,6 +54,11 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-480}
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
+      # The generation provider of the chat (phase 3): only the backend calls it, the worker does not get these
+      GENERATION_BASE_URL: ${GENERATION_BASE_URL:-}
+      GENERATION_MODEL: ${GENERATION_MODEL:-}
+      GENERATION_API_KEY: ${GENERATION_API_KEY:-}
+      GENERATION_TIMEOUT_SECONDS: ${GENERATION_TIMEOUT_SECONDS:-300}
     volumes:
       - uploads:/data/uploads
     depends_on:
