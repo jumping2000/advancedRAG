@@ -35,7 +35,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 from redis.asyncio import Redis
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -43,7 +43,7 @@ from app.chat import service
 from app.chat.prompt import SYSTEM_INSTRUCTIONS
 from app.chat.repository import AnswerInProgress, ConversationRepository, KbNotVisible
 from app.config import Settings
-from app.db.models import IndexingProfile, User
+from app.db.models import IndexingProfile, Message, User
 from app.ingestion.profile import ProfileSetupError, ensure_profile
 from app.main import create_app
 from app.run import migrate
@@ -1475,7 +1475,8 @@ async def test_fail_answer_ends_a_pending_answer_without_text_and_it_cannot_be_c
 
 
 async def test_history_is_the_completed_messages_before_a_message_in_order_and_limited(chat: Chat) -> None:
-    """A failed answer and the question it answered are not part of the history; the limit counts what is left."""
+    """An exchange is part of the history only when its answer is COMPLETED and has text: a failed answer, an empty one
+    (notice `no_documents`), a pending one, and the question of each, are out; the limit counts what is left."""
     conversation_id = await add_conversation(
         chat.engine,
         chat.kb_a,
@@ -1492,11 +1493,14 @@ async def test_history_is_the_completed_messages_before_a_message_in_order_and_l
         conversation = await repository.get_for(await chat.user(session, "mario"), conversation_id)
         assert conversation is not None
         everything = await repository.history(conversation, 10)
-        # the failed exchange (u2 and its failed answer) is out; u3 is the question of a pending answer
-        assert [m.content for m in everything] == ["u1", "a1", "u3"]
-        assert [m.content for m in await repository.history(conversation, 2)] == ["a1", "u3"]
+        # the failed exchange (u2 and its failed answer) is out, and so is u3, the question of a pending answer
+        assert [m.content for m in everything] == ["u1", "a1"]
+        assert [m.content for m in await repository.history(conversation, 1)] == ["a1"]
         assert await repository.history(conversation, 0) == []
-        u3 = everything[-1]
+        u3 = await session.scalar(
+            select(Message).where(Message.conversation_id == conversation_id, Message.content == "u3")
+        )
+        assert u3 is not None
         assert [m.content for m in await repository.history(conversation, 10, before=u3)] == ["u1", "a1"]
         assert [m.content for m in await repository.history(conversation, 1, before=u3)] == ["a1"]
 
@@ -1559,9 +1563,11 @@ async def test_history_ends_with_the_last_completed_answer_when_the_exchange_bef
     assert await history_contents(chat, conversation, 6, before_question=True) == ["u1", "a1"]
 
 
-async def test_history_takes_the_last_n_messages_with_text_so_an_empty_answer_does_not_shorten_it(chat: Chat) -> None:
-    """An answer saved with the notice `no_documents` has no text and is never sent: it must not use a place of the
-    limit, or the history would be shorter than `CHAT_HISTORY_MESSAGES`."""
+async def test_history_leaves_out_an_exchange_whose_answer_has_no_text_and_the_limit_counts_what_is_left(
+    chat: Chat,
+) -> None:
+    """An answer saved with the notice `no_documents` has no text and is never sent; the question it answered is out
+    too, or two user turns would be adjacent. The limit is applied after that, so it never shortens the history."""
     conversation = await add_conversation(
         chat.engine,
         chat.kb_a,
@@ -1576,12 +1582,15 @@ async def test_history_takes_the_last_n_messages_with_text_so_an_empty_answer_do
         ("assistant", "a4"),
     )
 
-    assert await history_contents(chat, conversation, 4) == ["u2", "u3", "u4", "a4"]
-    assert await history_contents(chat, conversation, 5) == ["a1", "u2", "u3", "u4", "a4"]
-    assert await history_contents(chat, conversation, 10) == ["u1", "a1", "u2", "u3", "u4", "a4"]
+    # the exchanges of u2 (empty answer) and of u3 (answer of spaces) are out: what is left is u1 a1 u4 a4
+    assert await history_contents(chat, conversation, 10) == ["u1", "a1", "u4", "a4"]
+    assert await history_contents(chat, conversation, 4) == ["u1", "a1", "u4", "a4"]
+    assert await history_contents(chat, conversation, 3) == ["a1", "u4", "a4"]  # the limit counts what is left
 
 
-async def test_the_request_holds_as_many_history_messages_as_the_limit_when_some_have_no_text(chat: Chat) -> None:
+async def test_the_request_holds_as_many_history_messages_as_the_limit_when_an_exchange_has_no_text(
+    chat: Chat,
+) -> None:
     await seed(chat, [chunk_row(0)])
     conversation = await add_conversation(
         chat.engine,
@@ -1598,7 +1607,44 @@ async def test_the_request_holds_as_many_history_messages_as_the_limit_when_some
     async with chat.api("mario", chat_history_messages=4) as api:
         assert names_of(events_of(await ask(api, conversation, QUESTION)))[-1] == "done"
 
-    assert [m["content"] for m in request_messages(chat)[1:-1]] == ["a1", "u2", "u3", "a3"]
+    assert [m["content"] for m in request_messages(chat)[1:-1]] == ["u1", "a1", "u3", "a3"]
+
+
+async def test_a_question_that_got_the_notice_no_documents_is_not_in_the_next_request_and_the_roles_alternate(
+    chat: Chat,
+) -> None:
+    """The KB has no document at the first question (an answer without text, with the notice), then it has: the
+    second request does not carry the first question alone, two user turns never meet."""
+    conversation = await add_conversation(
+        chat.engine,
+        chat.kb_a,
+        chat.users["mario"],
+        ("user", "u1"),
+        ("assistant", "a1"),
+        ("user", "u2"),
+        ("assistant", ""),
+    )
+    await seed(chat, [chunk_row(0)])
+
+    async with chat.api("mario") as api:
+        assert names_of(events_of(await ask(api, conversation, QUESTION)))[-1] == "done"
+
+    messages = request_messages(chat)
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert [m["content"] for m in messages[1:3]] == ["u1", "a1"]
+    assert "u2" not in json.dumps(messages)
+
+
+async def test_AC_014_after_the_notice_no_documents_the_next_question_goes_alone_to_the_provider(chat: Chat) -> None:
+    async with chat.api("mario") as api:
+        first = events_of(await ask_new(api, chat.kb_a, "Prima domanda"))
+        assert done_message(first)["notice"] == "no_documents"
+        await seed(chat, [chunk_row(0)])
+        second = events_of(await ask(api, first[0][1]["conversation_id"], QUESTION))
+
+    assert done_message(second)["status"] == "COMPLETED"
+    assert [m["role"] for m in request_messages(chat)] == ["system", "user"]
+    assert "Prima domanda" not in json.dumps(request_messages(chat))
 
 
 async def test_the_roles_of_the_request_alternate_after_failed_exchanges(chat: Chat) -> None:
