@@ -1588,6 +1588,28 @@ async def test_history_leaves_out_an_exchange_whose_answer_has_no_text_and_the_l
     assert await history_contents(chat, conversation, 3) == ["a1", "u4", "a4"]  # the limit counts what is left
 
 
+async def test_history_agrees_with_python_on_what_is_white_space(chat: Chat) -> None:
+    """`build_messages` drops a message that `strip()` empties: the query must not let one through (an answer of a
+    no-break space, an em space, an ideographic space is no text), and must keep one that `strip()` keeps (a zero-width
+    space is not white space for Python)."""
+    conversation = await add_conversation(
+        chat.engine,
+        chat.kb_a,
+        chat.users["mario"],
+        ("user", "u1"),
+        ("assistant", "a1"),
+        ("user", "u2"),
+        ("assistant", "\u00a0\u2003\u3000\u0085\x1f"),
+        ("user", "u3"),
+        ("assistant", "\u200b"),
+    )
+
+    contents = await history_contents(chat, conversation, 10)
+
+    assert contents == ["u1", "a1", "u3", "\u200b"]
+    assert all(content.strip() for content in contents)
+
+
 async def test_the_request_holds_as_many_history_messages_as_the_limit_when_an_exchange_has_no_text(
     chat: Chat,
 ) -> None:
