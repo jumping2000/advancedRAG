@@ -19,7 +19,6 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
-from starlette.responses import StreamingResponse
 
 from app.auth.deps import ApiError, CurrentUser, DbSession
 from app.chat import service
@@ -87,7 +86,7 @@ def checked_question(question: str, settings: Settings) -> str:
 
 async def stream_answer(
     request: Request, session: DbSession, user: User, conversation: Conversation, question: str
-) -> StreamingResponse:
+) -> service.AnswerResponse:
     """Save the question and its PENDING answer, and answer with the stream of the events."""
     try:
         user_message, answer = await ConversationRepository(session).start_answer(conversation, question)
@@ -96,17 +95,15 @@ async def stream_answer(
     except ConversationGone:
         raise conversation_not_found() from None
     await session.close()  # the request holds no connection while the answer is generated
-    return StreamingResponse(
-        service.answer_events(request, user, conversation, user_message, answer),
-        media_type="text/event-stream",
-        headers=STREAM_HEADERS,
+    return service.AnswerResponse(
+        request, user, conversation, user_message, answer, media_type="text/event-stream", headers=STREAM_HEADERS
     )
 
 
 @router.post("/kbs/{kb_id}/conversations")
 async def start_conversation(
     request: Request, body: QuestionIn, kb_id: KbId, user: CurrentUser, session: DbSession
-) -> StreamingResponse:
+) -> service.AnswerResponse:
     question = checked_question(body.question, request.app.state.settings)
     try:
         conversation = await ConversationRepository(session).create(user, kb_id, question[:TITLE_LENGTH].rstrip())
@@ -118,6 +115,6 @@ async def start_conversation(
 @router.post("/conversations/{conversation_id}/messages")
 async def ask_in_conversation(
     request: Request, body: QuestionIn, conversation: OwnConversation, user: CurrentUser, session: DbSession
-) -> StreamingResponse:
+) -> service.AnswerResponse:
     question = checked_question(body.question, request.app.state.settings)
     return await stream_answer(request, session, user, conversation, question)
