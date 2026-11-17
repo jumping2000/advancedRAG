@@ -1588,6 +1588,22 @@ async def test_history_leaves_out_an_exchange_whose_answer_has_no_text_and_the_l
     assert await history_contents(chat, conversation, 3) == ["a1", "u4", "a4"]  # the limit counts what is left
 
 
+async def test_history_leaves_out_a_question_that_has_no_answer_of_its_own(chat: Chat) -> None:
+    """A user message followed by another user message (a question that was never answered) is out: the roles of the
+    history alternate whatever the table holds."""
+    conversation = await add_conversation(
+        chat.engine,
+        chat.kb_a,
+        chat.users["mario"],
+        ("user", "u1"),
+        ("user", "u2"),
+        ("assistant", "a2"),
+        ("user", "u3"),
+    )
+
+    assert await history_contents(chat, conversation, 10) == ["u2", "a2"]
+
+
 async def test_history_agrees_with_python_on_what_is_white_space(chat: Chat) -> None:
     """`build_messages` drops a message that `strip()` empties: the query must not let one through (an answer of a
     no-break space, an em space, an ideographic space is no text), and must keep one that `strip()` keeps (a zero-width
