@@ -1,6 +1,8 @@
-"""Container entry point: apply the migrations, create the first admin and the indexing profile, start uvicorn."""
+"""Container entry point: apply the migrations, create the first admin and the indexing profile, fail the answers left
+PENDING by the previous run, start uvicorn."""
 
 import asyncio
+import logging
 from pathlib import Path
 
 import uvicorn
@@ -10,9 +12,12 @@ from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.auth.bootstrap import MissingAdminConfig, ensure_admin
+from app.chat.repository import ConversationRepository
 from app.config import Settings, get_settings
 from app.db.session import create_engine
 from app.ingestion.profile import ProfileSetupError, ensure_profile
+
+logger = logging.getLogger(__name__)
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -31,6 +36,11 @@ async def bootstrap(settings: Settings) -> None:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             await ensure_admin(session, settings)
         await ensure_profile(engine, settings)
+        # REQ-017: the answers that the previous backend left PENDING can never be finished (one process generates them)
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            interrupted = await ConversationRepository(session).mark_interrupted()
+        if interrupted:
+            logger.warning("answers left pending by the previous run, now failed as interrupted: %d", interrupted)
     finally:
         await engine.dispose()
 
