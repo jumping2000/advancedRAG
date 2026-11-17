@@ -356,29 +356,8 @@ def fake_docling(**modes: Any) -> Iterator[FakeDocling]:
         server.server_close()
 
 
-def main() -> None:
-    dimensions = int(os.environ.get("EMBEDDING_DIMENSIONS") or DEFAULT_DIMENSIONS)
-    servers = [
-        _Server(("0.0.0.0", OLLAMA_PORT), _OllamaHandler, FakeOllama(dimensions=dimensions)),
-        _Server(("0.0.0.0", DOCLING_PORT), _DoclingHandler, FakeDocling()),
-    ]
-    for server in servers:
-        _start(server)
-    stop = threading.Event()
-    for name in ("SIGTERM", "SIGINT"):
-        signal.signal(getattr(signal, name), lambda *_: stop.set())
-    print(f"fake Ollama on {OLLAMA_PORT}, fake Docling on {DOCLING_PORT}", flush=True)
-    stop.wait()
-    for server in servers:
-        server.shutdown()
-
-
-if __name__ == "__main__":
-    main()
-
-
 # Fake generation provider (phase 3, T-01) --------------------------------------------------------------------------
-# Added after `main()` so that the code above stays as it was; `python -m tests.fakes.services` does not serve it.
+# `python -m tests.fakes.services` (main below) does not serve it.
 
 GenerationStep = bytes | float | threading.Event
 
@@ -435,6 +414,9 @@ class FakeGenerationProvider:
     json_body: Any = None
     # Close the connection without answering the completion request.
     drop_connection: bool = False
+    # Answer every request (completion and models) with `redirect_status` and this `Location` instead.
+    redirect_to: str | None = None
+    redirect_status: int = 302
     # Wait this long (or until `release` is set) before answering the completion request.
     delay_seconds: float = 0.0
     # `GET /v1/models`: the status, and the seconds to wait before answering (or until `release` is set).
@@ -476,8 +458,19 @@ class _GenerationHandler(_Quiet):
         self.wfile.write(payload)
         self.close_connection = True
 
+    def _redirect(self, state: FakeGenerationProvider) -> None:
+        self.send_response(state.redirect_status)
+        self.send_header("Location", str(state.redirect_to))
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
     def do_GET(self) -> None:  # noqa: N802 (http.server API)
         state = self._record(None)
+        if state.redirect_to is not None:
+            self._redirect(state)
+            return
         if self.path != "/v1/models":
             self._answer(404, {"error": "not found"})
             return
@@ -492,6 +485,9 @@ class _GenerationHandler(_Quiet):
         except ValueError:
             body = None
         state = self._record(body)
+        if state.redirect_to is not None:
+            self._redirect(state)
+            return
         if self.path != "/v1/chat/completions":
             self._answer(404, {"error": "not found"})
             return
@@ -563,3 +559,24 @@ def fake_generation_provider(**modes: Any) -> Iterator[FakeGenerationProvider]:
         state.release.set()
         server.shutdown()
         server.server_close()
+
+
+def main() -> None:
+    dimensions = int(os.environ.get("EMBEDDING_DIMENSIONS") or DEFAULT_DIMENSIONS)
+    servers = [
+        _Server(("0.0.0.0", OLLAMA_PORT), _OllamaHandler, FakeOllama(dimensions=dimensions)),
+        _Server(("0.0.0.0", DOCLING_PORT), _DoclingHandler, FakeDocling()),
+    ]
+    for server in servers:
+        _start(server)
+    stop = threading.Event()
+    for name in ("SIGTERM", "SIGINT"):
+        signal.signal(getattr(signal, name), lambda *_: stop.set())
+    print(f"fake Ollama on {OLLAMA_PORT}, fake Docling on {DOCLING_PORT}", flush=True)
+    stop.wait()
+    for server in servers:
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
