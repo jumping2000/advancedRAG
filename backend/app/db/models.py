@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -194,3 +195,70 @@ class Chunk(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     word_count: Mapped[int] = mapped_column(Integer, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
+
+
+class Conversation(Base):
+    """A chat of one user on one KB; it goes away with the KB (ON DELETE CASCADE), and takes its messages with it."""
+
+    __tablename__ = "conversations"
+    __table_args__ = (Index("conversations_kb_user_updated_idx", "kb_id", "user_id", "updated_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    kb_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Message(Base):
+    """A question (`user`, COMPLETED) or an answer (`assistant`: PENDING while it is generated, then COMPLETED or
+    FAILED with an `error_code`). `notice` is a fixed code the UI translates (`no_documents`), not text. At most one
+    PENDING message per conversation: the partial unique index `messages_one_pending`."""
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint("role in ('user', 'assistant')", name="messages_role_check"),
+        CheckConstraint("status in ('PENDING', 'COMPLETED', 'FAILED')", name="messages_status_check"),
+        Index("messages_conversation_created_idx", "conversation_id", "created_at"),
+        Index("messages_one_pending", "conversation_id", unique=True, postgresql_where=text("status = 'PENDING'")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notice: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class MessageSource(Base):
+    """A chunk of the context of an answer, numbered as the model saw it, with its ranks and RRF score; `cited` says
+    whether the answer cites it. `chunk_id` has no foreign key (ADR-003): the chunk may be gone. Metadata only, never
+    the content of the chunk."""
+
+    __tablename__ = "message_sources"
+
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True
+    )
+    number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chunk_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    document_name: Mapped[str] = mapped_column(Text, nullable=False)
+    section_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dense_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bm25_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    cited: Mapped[bool] = mapped_column(Boolean, nullable=False)
