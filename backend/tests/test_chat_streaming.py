@@ -586,3 +586,43 @@ async def test_the_stream_closed_at_the_first_event_of_the_generator_saves_the_a
 
     assert first.startswith("event: conversation\n")
     assert state == ("FAILED", "interrupted"), "the answer stayed PENDING after the generator was closed"
+
+
+# The request session is closed after the answer is saved and before the response exists ----------------------------
+
+
+@pytest.mark.parametrize("failure", ["error", "cancelled"])
+async def test_a_request_that_fails_between_the_saving_of_the_answer_and_the_response_leaves_a_failed_answer(
+    chat: Chat, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """The route saves the question and the PENDING answer, then closes the session of the request: if that closing
+    raises or is cancelled, no response exists to settle the answer, and the route must do it."""
+    await seed(chat, [chunk_row(0)])
+    original = ConversationRepository.start_answer
+
+    async def start_then_break_the_close(self: ConversationRepository, *args: Any, **kwargs: Any) -> Any:
+        saved = await original(self, *args, **kwargs)
+        session = self.session
+        close = session.close
+
+        async def broken() -> None:
+            session.close = close  # type: ignore[method-assign]  # only the first closing breaks
+            raise RuntimeError("guasto") if failure == "error" else asyncio.CancelledError()
+
+        session.close = broken  # type: ignore[method-assign]
+        return saved
+
+    monkeypatch.setattr(ConversationRepository, "start_answer", start_then_break_the_close)
+
+    await leave(chat, f"/api/kbs/{chat.kb_a}/conversations", QUESTION, "2.4", "never")
+
+    state = await eventually(lambda: answer_state(chat), within=5.0)
+    assert state == ("FAILED", "interrupted"), "the answer stayed PENDING"
+    assert await pending_count(chat.engine) == 0
+    assert chat.provider.requests == []
+    monkeypatch.undo()
+    (conversation,) = await fetch(chat.engine, "select id from conversations")
+    async with chat.api("mario") as api:
+        again = await ask(api, conversation["id"], "quokka di nuovo")
+    assert again.status_code == 200, again.text
+    assert [name for name, _ in parse_sse(again.text) if name != "comment"][-1] == "done"
