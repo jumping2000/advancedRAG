@@ -156,9 +156,14 @@ class AnswerResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            events: Any = self._events
-            if events.ag_frame is not None:  # not finished: it never started, or it waits at an event nobody reads
-                await _abandon(events, self._app, self._answer_id, self._ids, self._started)
+            await self.abandon()
+
+    async def abandon(self) -> None:
+        """Settle the answer if the stream has not ended (see the class); nothing if it has. The route calls it too,
+        when it fails after the answer was saved and before the response could be sent."""
+        events: Any = self._events
+        if events.ag_frame is not None:  # not finished: it never started, or it waits at an event nobody reads
+            await _abandon(events, self._app, self._answer_id, self._ids, self._started)
 
 
 async def _abandon(events: AsyncGenerator[str], app: FastAPI, answer_id: uuid.UUID, ids: str, started: float) -> None:

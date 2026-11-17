@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import DateTime, Text, func, insert, literal, or_, select, tuple_, update
+from sqlalchemy import DateTime, Text, and_, func, insert, literal, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.chat.retrieval import Candidate
 from app.db.models import Conversation, Message, MessageSource, User
 from app.knowledge_bases.repository import FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, KnowledgeBaseRepository
+
+# A text has at least one character that Python's `str.isspace` does not count as white space (`build_messages` drops
+# a message that `strip()` empties, so the query must agree with it: PostgreSQL's `\S` does not know the same set)
+_SPACES = "".join(f"\\U{ord(c):08x}" for c in map(chr, range(0x3001)) if c.isspace())
+_HAS_TEXT = f"[^{_SPACES}]"
 
 
 class AnswerInProgress(Exception):
@@ -71,15 +76,20 @@ class ConversationRepository:
 
     async def history(self, conversation: Conversation, limit: int, before: Message | None = None) -> list[Message]:
         """The last `limit` messages of the conversation that are sent to the model, oldest first, only those before
-        the message `before` when given. A message is sent when it is COMPLETED and has text (an answer saved with a
-        notice has none: it does not use a place of the limit), and when it is not part of a failed exchange: a FAILED
-        answer is out, and so is the question it answered (the user message that comes right before it), so the roles
-        alternate."""
+        the message `before` when given. The unit is the exchange: a question and the answer that follows it. An answer
+        is sent only when it is COMPLETED and has text, a question only when the message right after it is such an
+        answer. So a failed answer, an answer saved with a notice (no text), a pending one, and the question of each,
+        are all left out, and the roles alternate. The limit counts the messages that are left."""
         if limit <= 0:
             return []
-        following = func.lead(Message.status).over(order_by=(Message.created_at, Message.id))
+        order = (Message.created_at, Message.id)
         numbered = (
-            select(Message.id.label("id"), following.label("following"))
+            select(
+                Message.id.label("id"),
+                func.lead(Message.role).over(order_by=order).label("next_role"),
+                func.lead(Message.status).over(order_by=order).label("next_status"),
+                func.lead(Message.content).over(order_by=order).label("next_content"),
+            )
             .where(Message.conversation_id == conversation.id)
             .subquery()
         )
@@ -88,8 +98,15 @@ class ConversationRepository:
             .join(numbered, numbered.c.id == Message.id)
             .where(
                 Message.status == "COMPLETED",
-                Message.content.op("~")(r"\S"),
-                or_(Message.role != "user", func.coalesce(numbered.c.following, "") != "FAILED"),
+                Message.content.op("~")(_HAS_TEXT),
+                or_(
+                    Message.role != "user",
+                    and_(
+                        numbered.c.next_role == "assistant",
+                        numbered.c.next_status == "COMPLETED",
+                        numbered.c.next_content.op("~")(_HAS_TEXT),
+                    ),
+                ),
             )
         )
         if before is not None:
