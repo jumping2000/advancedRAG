@@ -39,6 +39,10 @@ class KnowledgeBaseRepository:
             query = query.join(KbMember, and_(KbMember.kb_id == KnowledgeBase.id, KbMember.user_id == user.id))
         return query
 
+    @staticmethod
+    def visible_kb_ids(user: User) -> Select[tuple[uuid.UUID]]:
+        raise NotImplementedError
+
     async def list_for(self, user: User) -> list[KnowledgeBase]:
         query = self._visible_to(user).order_by(func.lower(KnowledgeBase.name), KnowledgeBase.id)
         return list((await self.session.scalars(query)).all())
