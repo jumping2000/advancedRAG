@@ -140,7 +140,7 @@ async def dense_search(
         {"tuples": str(_MAX_SCAN_TUPLES), "ef_search": str(min(max(limit, _MIN_EF_SEARCH), _MAX_EF_SEARCH))},
     )
     sized = _SizedVector(dimensions)
-    question = cast(bindparam("question", list(vector), type_=sized), sized)
+    question = bindparam("question", list(vector), type_=sized)  # rendered as CAST($1 AS vector(N)) by the type
     distance_expression = literal_column(f"chunks.{expression}").op("<=>", return_type=Float)(question)
     nearest = (
         _chunks(Chunk.id.label("id"), distance_expression.label("distance"))
