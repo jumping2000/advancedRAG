@@ -30,6 +30,7 @@ from app.db.models import Conversation, User
 from app.knowledge_bases.repository import KnowledgeBaseRepository
 from app.knowledge_bases.routes import kb_not_found, visible_kb_id
 
+# The title is the first characters of the question, without the spaces the cut may leave at its end
 TITLE_LENGTH = 80
 STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
@@ -108,7 +109,7 @@ async def start_conversation(
 ) -> StreamingResponse:
     question = checked_question(body.question, request.app.state.settings)
     try:
-        conversation = await ConversationRepository(session).create(user, kb_id, question[:TITLE_LENGTH])
+        conversation = await ConversationRepository(session).create(user, kb_id, question[:TITLE_LENGTH].rstrip())
     except KbNotVisible:
         raise kb_not_found() from None
     return await stream_answer(request, session, user, conversation, question)

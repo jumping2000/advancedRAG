@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import DateTime, Text, func, insert, literal, select, tuple_, update
+from sqlalchemy import DateTime, Text, func, insert, literal, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,11 +70,28 @@ class ConversationRepository:
         return conversation
 
     async def history(self, conversation: Conversation, limit: int, before: Message | None = None) -> list[Message]:
-        """The last `limit` COMPLETED messages of the conversation, oldest first, only those before the message
-        `before` when given. A FAILED or PENDING answer is not part of it (the question of a failed answer is)."""
+        """The last `limit` messages of the conversation that are sent to the model, oldest first, only those before
+        the message `before` when given. A message is sent when it is COMPLETED and has text (an answer saved with a
+        notice has none: it does not use a place of the limit), and when it is not part of a failed exchange: a FAILED
+        answer is out, and so is the question it answered (the user message that comes right before it), so the roles
+        alternate."""
         if limit <= 0:
             return []
-        query = select(Message).where(Message.conversation_id == conversation.id, Message.status == "COMPLETED")
+        following = func.lead(Message.status).over(order_by=(Message.created_at, Message.id))
+        numbered = (
+            select(Message.id.label("id"), following.label("following"))
+            .where(Message.conversation_id == conversation.id)
+            .subquery()
+        )
+        query = (
+            select(Message)
+            .join(numbered, numbered.c.id == Message.id)
+            .where(
+                Message.status == "COMPLETED",
+                Message.content.op("~")(r"\S"),
+                or_(Message.role != "user", func.coalesce(numbered.c.following, "") != "FAILED"),
+            )
+        )
         if before is not None:
             query = query.where(tuple_(Message.created_at, Message.id) < tuple_(before.created_at, before.id))
         newest_first = await self.session.scalars(
@@ -188,11 +205,15 @@ class ConversationRepository:
         await self.session.commit()
         return message
 
-    async def fail_answer(self, message_id: uuid.UUID, code: str) -> None:
-        """End a PENDING answer as FAILED with the code and no text; an answer that is not PENDING is left as it is."""
-        await self.session.execute(
+    async def fail_answer(self, message_id: uuid.UUID, code: str) -> bool:
+        """End a PENDING answer as FAILED with the code and no text. True if it did; an answer that is not PENDING is
+        left as it is (False): a call after the answer ended, or a second call, changes nothing."""
+        result = await self.session.execute(
             update(Message)
             .where(Message.id == message_id, Message.status == "PENDING")
             .values(content="", status="FAILED", error_code=code, notice=None)
+            .returning(Message.id)
         )
+        changed = result.first() is not None
         await self.session.commit()
+        return changed
