@@ -31,8 +31,10 @@ Flusso di una domanda (`POST`):
    - alla fine `clean_citations` toglie i [n] fuori intervallo, `complete_answer` salva testo e fonti e arriva l'evento
      `done`.
 5. Su errore o timeout: `fail_answer(code)` ed evento `error`. Su disconnessione del client
-   (`asyncio.CancelledError`/`GeneratorExit` del generatore): `fail_answer('interrupted')` in una sessione nuova, protetta
-   con `asyncio.shield`.
+   (`asyncio.CancelledError`/`GeneratorExit` del generatore, o risposta HTTP che finisce prima del generatore):
+   `AnswerResponse`, sottoclasse di `StreamingResponse` in `app/chat/service.py`, chiude il generatore e salva
+   `fail_answer('interrupted')` in una sessione nuova, in un task tracciato e protetto con `asyncio.shield`. Un guasto
+   interno imprevisto dà `internal_error`.
 
 Scelte tecniche, verificate su `paradedb/paradedb:0.26.4-pg17`:
 - BM25 con il testo della domanda: `content ||| :q OR section_title ||| :q`, ordinato per `pdb.score(id)`. L'operatore
@@ -106,7 +108,7 @@ Alternative scartate:
     - `delta` `{"text"}`;
     - `done` `{"message": MessageOut}`;
     - `error` `{"error": {"code", "message"}}`, con `code` fra `embedding_error`, `generation_error`,
-      `generation_timeout`;
+      `generation_timeout`, `internal_error`;
     - commento `: keepalive` ogni 15 s.
   - Schemi:
     - `ConversationOut {id, kb_id, title, created_at, updated_at}`;
@@ -169,12 +171,14 @@ Alternative scartate:
     - `get_for_admin(conversation_id) -> Conversation | None`;
   - scrittura:
     - `create(user, kb_id, title) -> Conversation`, `rename(conversation, title)`, `delete(conversation)`;
-    - `history(conversation, limit) -> list[Message]`, con i soli completati;
+    - `history(conversation, limit, before=None) -> list[Message]`: i soli messaggi di scambi completati con testo (uno
+      scambio la cui risposta non è completata con testo è escluso per intero, domanda compresa), il limite applicato dopo
+      i filtri, `before` esclude la domanda appena salvata dalla propria cronologia;
     - `start_answer(conversation, question) -> tuple[Message, Message]`, che solleva `AnswerInProgress`;
     - `restart_answer(conversation, message_id) -> Message`, che solleva `NotRetryable` o `AnswerInProgress`;
     - `complete_answer(message_id, content, notice, sources: Sequence[tuple[int, Candidate, bool]]) -> Message | None`
       (None se la conversazione è stata cancellata);
-    - `fail_answer(message_id, code) -> None`;
+    - `fail_answer(message_id, code) -> bool` (vero se la risposta era `PENDING` e ora è fallita, falso altrimenti);
     - `mark_interrupted() -> int`;
   - estratti e admin:
     - `excerpt(conversation, message_id, number) -> SourceExcerpt | None`;
@@ -217,6 +221,7 @@ flowchart TD
     K --> L[Stream from provider, event delta per fragment, keepalive every 15 s]
     L -- timeout --> X2[fail_answer generation_timeout]
     L -- unreachable / non 2xx / broken stream --> X3[fail_answer generation_error]
+    L -- unexpected internal failure --> X5[fail_answer internal_error]
     L -- client disconnects or conversation deleted --> X4[fail_answer interrupted or stop]
     L -- DONE --> M[clean_citations: drop n out of range]
     M --> N[complete_answer: text + sources with ranks and scores]
@@ -270,4 +275,5 @@ Ordine e parallelismo:
   cancella le tre tabelle.
 
 ## Revisions
+- 2026-11-17 (seconda): allineamento al codice di T-03 dopo le due review: `fail_answer` restituisce `bool`, `history` ha il parametro `before` e la nuova regola degli scambi (REQ-006 rivisto), `AnswerResponse` nel flusso di interruzione, `internal_error` nei codici SSE e nel diagramma. Nessun cambio di task.
 - 2026-11-17: aggiunto AC-048 (guasto interno → `internal_error`) a T-03, che contiene il codice; nessun nuovo task. Revisione della spec corrispondente: REQ-006/AC-012 (scambio fallito escluso per intero dalla cronologia), REQ-015, REQ-011. T-03 era bloccato dalla review (PR aperta, non unita) e prosegue sullo stesso branch.

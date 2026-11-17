@@ -109,9 +109,10 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
 - REQ-006 (functional): Il contesto passato al modello contiene, numerati da 1 nell'ordine RRF, i primi
   `CHAT_CONTEXT_CHUNKS` chunk (default 8), ciascuno con titolo del documento, sezione e pagine quando note, e gli ultimi
   `CHAT_HISTORY_MESSAGES` messaggi non vuoti degli scambi completati della conversazione (default 6) prima della
-  domanda; uno scambio la cui risposta è fallita è escluso per intero, la risposta e la domanda a cui rispondeva, così
-  i ruoli inviati al provider si alternano; le istruzioni chiedono di rispondere solo in base alle fonti, nella lingua della domanda, di citare le fonti
-  con [n] e di dire esplicitamente quando le fonti non contengono la risposta.
+  domanda; uno scambio la cui risposta non è completata con del testo (fallita, in corso, o salvata senza testo come la risposta
+  `no_documents`) è escluso per intero, la risposta e la domanda a cui rispondeva, e una domanda senza risposta è
+  esclusa, così i ruoli inviati al provider si alternano; le istruzioni chiedono di rispondere solo in base alle fonti,
+  nella lingua della domanda, di citare le fonti con [n] e di dire esplicitamente quando le fonti non contengono la risposta.
 - REQ-007 (functional): Se la KB non ha nessun chunk ricercabile (nessun documento READY nel profilo attivo), la domanda
   riceve una risposta fissa salvata nella conversazione con il codice `no_documents` e senza fonti, che la UI mostra
   tradotta («Nessun documento disponibile in questa knowledge base»); né Ollama né il provider di generazione vengono chiamati.
@@ -228,7 +229,8 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
   conversazione e la fonte, then la fonte mostra il nome del documento e «Fonte non più disponibile», e nel database non
   esiste nessuna copia del contenuto di quel chunk.
 - AC-021 [REQ-011]: Given una prima domanda di 120 caratteri con spazi iniziali, when viene inviata, then nasce una
-  conversazione con titolo uguale ai primi 80 caratteri della domanda senza gli spazi iniziali.
+  conversazione con titolo uguale ai primi 80 caratteri della domanda senza gli spazi iniziali e senza quelli finali
+  lasciati dal taglio.
 - AC-022 [REQ-011]: Given una conversazione, when l'autore la rinomina con «  Budget 2026  », con «   » e con 201
   caratteri, then il primo titolo diventa «Budget 2026», gli altri ricevono 422 `validation_error` e il titolo resta.
 - AC-023 [REQ-011]: Given una domanda di soli spazi e una di 4001 caratteri, when vengono inviate, then entrambe
@@ -330,4 +332,5 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
 - Dataset e metriche per valutare retrieval, fusione RRF e qualità delle risposte in italiano e inglese (fase 4) — blocking: no
 
 ## Revisions
+- 2026-11-17 (seconda): REQ-006 precisa che dalla cronologia esce per intero ogni scambio la cui risposta non è completata con del testo (anche quello `no_documents`, risposta vuota) e ogni domanda senza risposta, così i ruoli si alternano sempre (decisione dell'owner alla seconda review di T-03); AC-021 dice che il titolo non ha spazi finali dopo il taglio, come già REQ-011.
 - 2026-11-17: durante T-03 il reviewer e l'owner hanno deciso due punti che la spec lasciava aperti. REQ-006/AC-012: la cronologia inviata al provider esclude l'intero scambio fallito, domanda compresa, per avere ruoli alternati con tutti i provider (prima: solo la risposta fallita). REQ-015 e nuovo AC-048: un guasto interno imprevisto è riportato con il codice `internal_error` e non con `generation_error`. REQ-011: il titolo non ha spazi finali dopo il taglio a 80 caratteri. Il piano segue: AC-048 è coperto da T-03.
