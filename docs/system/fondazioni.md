@@ -1,7 +1,7 @@
 # Area: fondazioni (stack, access, users, knowledge bases)
 
 - Last aligned: 2026-11-17
-- Linked specs: SPEC-2026-11-06-fase-1-fondazioni, SPEC-2026-11-07-fase-2-ingestion
+- Linked specs: SPEC-2026-11-06-fase-1-fondazioni, SPEC-2026-11-07-fase-2-ingestion, SPEC-2026-11-17-fase-3-chat
 
 ## Current behaviour
 The platform runs as a Docker Compose stack of five services: `nginx` (the only one with a host port, `HTTP_PORT`,
@@ -169,15 +169,22 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   document is kept after it failed) and `DOCLING_INCLUDE_IMAGES` (false: Docling is not asked to
   extract images; an interface switch for it is deferred to the settings page of phase 4).
 - Generation provider (phase 3, T-01; backend only, the worker does not get them): `GENERATION_BASE_URL` (empty: not
-  configured, the backend starts and health shows `not_configured`; otherwise the base of an OpenAI-compatible API, for
-  example `https://api.openai.com/v1` or `http://ollama:11434/v1`), `GENERATION_MODEL` (required when the base URL is
+  configured, the backend starts and health shows `not_configured`; otherwise the base of an OpenAI-compatible API, an
+  `http` or `https` URL with a host, for example `https://api.openai.com/v1` or `http://ollama:11434/v1`, with or
+  without a final slash; any other value, such as `ollama:11434/v1` or `ftp://x`, stops the backend at startup and the
+  error names `GENERATION_BASE_URL`), `GENERATION_MODEL` (required when the base URL is
   set: the backend does not start and the error names `GENERATION_MODEL`), `GENERATION_API_KEY` (a secret, empty in
   `.env.example`; sent as `Authorization: Bearer` to the provider only when set, also by the health check) and
   `GENERATION_TIMEOUT_SECONDS` (300, above 0: the whole of one generation). Blank values count as empty. The client
   (`backend/app/chat/generation.py`) streams `POST {base}/chat/completions` and raises `GenerationError` with the code
-  `generation_error` (provider unreachable, status not 2xx, a body that is not an event stream, a malformed event, an
-  error object in the stream, or a stream that ends without `[DONE]` and without a `finish_reason`) or
-  `generation_timeout`; the messages are fixed text.
+  `generation_error` (provider unreachable, status not 2xx, a redirect (never followed), a body that is not an event
+  stream, a malformed event, an error object in the stream, a `finish_reason` other than `stop` such as `length` or
+  `content_filter` (a cut answer is never a completed one), a stream with no text at all, a stream that ends without
+  `[DONE]` and without a `finish_reason`, or a key or message that cannot be encoded, such as a non-ASCII key) or
+  `generation_timeout` (the whole generation, counted from the first read of the stream, also when the data is
+  already buffered); the messages are fixed text and the error holds no other exception, so that neither the key nor
+  the prompt can reach a log. The key is kept as a secret string in the client. Settings errors do not print the
+  input values (a startup error never shows `GENERATION_API_KEY`).
 - The retry route (phase 2, T-05) is the second POST without a JSON body: a POST with no `Content-Type` passes
   `require_json`, so the UI presses the button with a plain `fetch` POST. It checks the original with `UploadStorage`
   before it requeues (`DocumentRepository.requeue` changes FAILED to QUEUED in one statement, so two simultaneous
