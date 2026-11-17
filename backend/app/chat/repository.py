@@ -37,6 +37,14 @@ class AnswerInProgress(Exception):
     """The conversation already has a PENDING answer (the unique index `messages_one_pending` refused another one)."""
 
 
+class NotRetryable(Exception):
+    """The message is not the last answer of its conversation, or that answer is not FAILED."""
+
+
+class MessageNotFound(Exception):
+    """The conversation has no message with this id."""
+
+
 class KbNotVisible(Exception):
     """The KB does not exist or the user cannot see it: no conversation was created."""
 
@@ -234,3 +242,14 @@ class ConversationRepository:
         changed = result.first() is not None
         await self.session.commit()
         return changed
+
+    # Skeleton of T-04 (stubs: the tests of T-04 fail on their assertions until the next commits) ---------------------
+
+    async def restart_answer(self, conversation: Conversation, message_id: uuid.UUID) -> Message:
+        raise NotRetryable
+
+    async def question_of(self, answer: Message) -> Message | None:
+        return None
+
+    async def mark_interrupted(self) -> int:
+        return 0

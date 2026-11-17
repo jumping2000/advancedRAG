@@ -123,3 +123,8 @@ async def ask_in_conversation(
 ) -> service.AnswerResponse:
     question = checked_question(body.question, request.app.state.settings)
     return await stream_answer(request, session, user, conversation, question)
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/retry")
+async def retry_answer(conversation: OwnConversation, message_id: str) -> None:
+    raise ApiError(501, "not_implemented", "Not implemented yet")  # skeleton of T-04
