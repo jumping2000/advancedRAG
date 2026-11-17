@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,9 +12,18 @@ from sqlalchemy.engine import URL, make_url
 from app.ingestion.chunker import ChunkerConfig
 
 
+def _is_http_url_with_host(value: str) -> bool:
+    try:
+        parts = urlsplit(value)
+        parts.port  # noqa: B018 (raises ValueError for a port that is not a number or is out of range)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname) and not any(c.isspace() for c in value)
+
+
 class Settings(BaseSettings):
     # The repository-root .env also works when the backend runs from backend/ (the later file wins).
-    model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore")
+    model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore", hide_input_in_errors=True)
 
     database_url: str
     # When set, it replaces the password of DATABASE_URL: any character is allowed, it is never pasted into the URL.
@@ -94,6 +104,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _check_generation_settings(self) -> Self:
+        if self.generation_base_url and not _is_http_url_with_host(self.generation_base_url):
+            # the value is not repeated: a URL can carry credentials
+            raise ValueError(
+                "GENERATION_BASE_URL must be an http or https URL with a host, for example http://ollama:11434/v1"
+            )
         if self.generation_base_url and not self.generation_model:
             raise ValueError("GENERATION_MODEL must be set when GENERATION_BASE_URL is set")
         return self
