@@ -231,9 +231,20 @@ async def test_AC_045_while_an_answer_waits_for_the_provider_the_other_calls_ans
         response = await api.request(method, path, **kwargs)
         return response, time.monotonic() - started
 
+    probes: list[float] = []
+
+    async def probe(api: httpx.AsyncClient, stop: asyncio.Event) -> None:
+        """A quick call every 50 ms for the whole life of the answer, so that no step of it (the embedding, the
+        searches, the wait for the provider, the saving) can block the backend without a call noticing."""
+        while not stop.is_set():
+            probes.append((await timed(api, "GET", "/api/kbs"))[1])
+            await asyncio.sleep(0.05)
+
     with running(settings) as base_url:
         waiting = await signed_in(base_url)
         other = await signed_in(base_url)
+        stop = asyncio.Event()
+        probing = asyncio.create_task(probe(other, stop))
         try:
             running_answer = asyncio.create_task(long_answer(waiting))
             assert await asyncio.to_thread(chat.provider.request_received.wait, SECONDS), "the provider got no request"
@@ -250,10 +261,16 @@ async def test_AC_045_while_an_answer_waits_for_the_provider_the_other_calls_ans
             )
             assert not running_answer.done()  # all of this happened while the answer was still waiting
 
+            async def probed_enough() -> bool:
+                return len(probes) >= 5
+
+            assert await eventually(probed_enough), "the quick calls did not go on while the answer waited"
             chat.provider.release.set()
             await asyncio.wait_for(running_answer, SECONDS)
         finally:
             chat.provider.release.set()
+            stop.set()
+            await probing
             await waiting.aclose()
             await other.aclose()
 
@@ -265,6 +282,7 @@ async def test_AC_045_while_an_answer_waits_for_the_provider_the_other_calls_ans
     assert (unknown.status_code, unknown.json()["error"]["code"]) == (404, "conversation_not_found")
     for name, elapsed in (("health", health_time), ("kbs", kbs_time), ("busy", busy_time), ("unknown", unknown_time)):
         assert elapsed <= limit, f"{name} took {elapsed:.2f} s, the limit is {limit} s"
+    assert max(probes) <= limit, f"a call took {max(probes):.2f} s during the answer, the limit is {limit} s"
     assert outcome["status"] == 200
     assert outcome["events"][-1][0] == "done"  # the waiting answer finished normally once released
 
