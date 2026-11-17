@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Self
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -84,6 +84,18 @@ class Settings(BaseSettings):
             )
         if problems:
             raise ValueError("; ".join(problems))
+        return self
+
+    @field_validator("generation_base_url", "generation_model")
+    @classmethod
+    def _strip_generation_text(cls, value: str) -> str:
+        """Blank counts as empty (an empty or spaced value in .env is the same as not set)."""
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _check_generation_settings(self) -> Self:
+        if self.generation_base_url and not self.generation_model:
+            raise ValueError("GENERATION_MODEL must be set when GENERATION_BASE_URL is set")
         return self
 
     @property

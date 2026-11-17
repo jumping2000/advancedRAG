@@ -1,4 +1,9 @@
-"""GET /api/health: state of database, Redis, Ollama, Docling and the ingestion worker (REQ-003, REQ-001 of phase 2)."""
+"""GET /api/health: state of database, Redis, Ollama, Docling, the ingestion worker and the generation provider.
+
+REQ-003 of phase 1, REQ-001 of phase 2 and REQ-002 of phase 3: `generation` is `not_configured` when
+GENERATION_BASE_URL is empty, so the overall status is `degraded` then; the HTTP code depends only on database and
+Redis.
+"""
 
 import asyncio
 from collections.abc import Awaitable
@@ -11,6 +16,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.chat.generation import OpenAICompatibleClient
 from app.config import Settings
 from app.worker import HEARTBEAT_PREFIX
 
@@ -53,18 +59,29 @@ async def _state(check: Awaitable[None], limit_seconds: float) -> CheckState:
     return "ok"
 
 
+async def _generation(settings: Settings, limit_seconds: float) -> CheckState:
+    """`not_configured` without a base URL (and then no request is sent), else `ok` or `unreachable`."""
+    if not settings.generation_base_url:
+        return "not_configured"
+    key = settings.generation_api_key.get_secret_value() if settings.generation_api_key else None
+    client = OpenAICompatibleClient(
+        settings.generation_base_url, settings.generation_model, key, settings.generation_timeout_seconds
+    )
+    return await client.check(limit_seconds)
+
+
 @router.get("/health")
 async def health(request: Request) -> JSONResponse:
     settings: Settings = request.app.state.settings
     timeout = settings.health_check_timeout_seconds
-    database, redis, ollama, docling, worker = await asyncio.gather(
+    database, redis, ollama, docling, worker, generation = await asyncio.gather(
         _state(_database(request.app.state.engine), timeout),
         _state(_redis(request.app.state.redis), timeout),
         _state(_http(f"{settings.ollama_base_url.rstrip('/')}/api/version", timeout), timeout),
         _state(_http(f"{settings.docling_base_url.rstrip('/')}/health", timeout), timeout),
         _state(_worker(request.app.state.redis), timeout),
+        _generation(settings, timeout),
     )
-    generation: CheckState = "not_configured" if not settings.generation_base_url else "unreachable"  # skeleton
     checks = {
         "database": database,
         "redis": redis,
