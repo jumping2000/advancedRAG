@@ -10,10 +10,11 @@ question comes after the sources, as the last thing of the last message.
 `clean_citations` applies the rule of the citations to the answer of the model. A citation token is `[`, one or more
 ASCII digits, `]`. A token is kept only when it is the canonical number of a source of the context: no leading zero,
 from 1 to the number of sources. Every other token is removed from the text, and the text around it is left as it is
-(no space is collapsed). What is not a token (a comma or a space inside the brackets, a sign, a decimal point, a digit
-that is not ASCII) is plain text: never removed, never counted as a citation. Code is text like any other: a token
-inside a code fence is cleaned like the rest, so every `[n]` that is left in a saved answer is one of its sources, and
-the UI can link all of them.
+(no space is collapsed); a token that the removal of another one makes (`[[9]1]` leaves `[1]`) is judged the same way,
+until none is left that is not a source. What is not a token (a comma or a space inside the brackets, a sign, a decimal
+point, a digit that is not ASCII) is plain text: never removed, never counted as a citation. Code is text like any
+other: a token inside a code fence is cleaned like the rest, so every `[n]` that is left in a saved answer is one of its
+sources, and the UI can link all of them.
 """
 
 from __future__ import annotations
@@ -78,19 +79,37 @@ def build_messages(question: str, candidates: Sequence[Candidate], history: Sequ
     return messages
 
 
+def _is_source(digits: str, count: int) -> bool:
+    """Whether the digits of a token are the canonical number of one of the `count` sources. A number with more digits
+    than `count` is out of range and is not converted: a huge one is a long `int`."""
+    return digits[0] != "0" and len(digits) <= len(str(max(count, 0))) and 1 <= int(digits) <= count
+
+
+def _without_foreign_tokens(text: str, count: int) -> str:
+    """The text with every token that is not a source removed, also those that the removal of another token makes
+    (`[[9]1]` becomes `[1]`, `[1[9]]` becomes `[1]`, `[[[9]9]9]` becomes nothing). One pass, linear: the characters
+    are kept in a buffer, and each `]` is checked against the end of the buffer, where a token can only be made."""
+    kept: list[str] = []
+    digits: list[int] = []  # digits[i]: how many ASCII digits end at kept[i] (0 if kept[i] is not a digit)
+    for char in text:
+        if char == "]":
+            run = digits[-1] if digits else 0
+            if 0 < run < len(kept) and kept[-run - 1] == "[":
+                if run > len(str(max(count, 0))) or not _is_source("".join(kept[-run:]), count):
+                    del kept[-run - 1 :]
+                    del digits[-run - 1 :]
+                    continue
+        kept.append(char)
+        digits.append((digits[-1] if digits else 0) + 1 if "0" <= char <= "9" else 0)
+    return "".join(kept)
+
+
 def clean_citations(text: str, count: int) -> tuple[str, list[int]]:
     """The text without the tokens that are not a source (see the module), and the numbers cited, in order of first
-    appearance. `count` is the number of sources of the context."""
-    cited: list[int] = []
-
-    def keep_or_remove(match: re.Match[str]) -> str:
-        digits = match.group(1)
-        # A number with more digits than `count` is out of range, and is not converted: a huge one is a long `int`
-        if digits[0] != "0" and len(digits) <= len(str(max(count, 0))) and 1 <= int(digits) <= count:
-            number = int(digits)
-            if number not in cited:
-                cited.append(number)
-            return match.group(0)
-        return ""
-
-    return _CITATION.sub(keep_or_remove, text), cited
+    appearance in the text that is left. `count` is the number of sources of the context. Removing a token can make a
+    new one from what was around it: the result has none that is not a source, so every `[n]` of it is a source."""
+    if all(_is_source(match.group(1), count) for match in _CITATION.finditer(text)):
+        cleaned = text  # nothing is removed, so nothing new is made
+    else:
+        cleaned = _without_foreign_tokens(text, count)
+    return cleaned, list(dict.fromkeys(int(match.group(1)) for match in _CITATION.finditer(cleaned)))
