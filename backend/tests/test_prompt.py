@@ -300,3 +300,55 @@ def test_AC_017_a_citation_inside_a_code_fence_is_cleaned_like_the_rest() -> Non
 def test_AC_017_the_text_around_a_removed_token_is_left_as_it_is() -> None:
     assert clean_citations("Fine [9].\n\n[9]\n", 8) == ("Fine .\n\n\n", [])
     assert clean_citations("\t[10]\t", 8) == ("\t\t", [])
+
+
+# AC-017: a token that the removal of another one makes ---------------------------------------------------------------
+# Every [n] that is left in a saved answer is one of its sources, also when it was not there before the cleaning.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "cited"),
+    [
+        ("a [[9]1] b", "a [1] b", [1]),  # "[9]" goes, "[" and "1]" meet
+        ("a [1[9]] b", "a [1] b", [1]),
+        ("a [[9][9]1] b", "a [1] b", [1]),
+        ("a [[9]1][[9]2] b", "a [1][2] b", [1, 2]),
+        ("a [1[9]2] b", "a  b", []),  # "[12]" is out of range
+        ("a [[9]0] b", "a  b", []),  # "[0]" is not a source
+        ("a [0[9]1] b", "a  b", []),  # "[01]" has a leading zero
+        ("a [[[9]9]9]2 b", "a 2 b", []),  # the chain ends in nothing
+        ("a [[[9]9]2] b", "a [2] b", [2]),
+        ("a [[[9]1]2] b", "a [[1]2] b", [1]),  # "[1]" is a token, "[...2]" is not
+    ],
+)
+def test_AC_017_a_token_that_the_removal_of_another_one_makes_is_cleaned_too(
+    text: str, expected: str, cited: list[int]
+) -> None:
+    assert clean_citations(text, 8) == (expected, cited)
+
+
+def test_AC_017_a_long_chain_of_nested_removals_is_cleaned_to_the_end() -> None:
+    depth = 20000
+    nested = "[" * depth + "9]" * depth  # each removal makes the next "[9]"
+    inner = "[1" + "[9]" * depth + "]"  # all the "[9]" go, "[1]" is left
+
+    assert clean_citations(f"a {nested} b", 8) == ("a  b", [])
+    assert clean_citations(f"a {inner} b", 8) == ("a [1] b", [1])
+
+
+def test_AC_017_every_token_that_is_left_is_a_source_and_the_numbers_cited_are_those_of_the_text_left() -> None:
+    """Random texts of brackets and digits: what is left has only canonical tokens in range, the cited list is that of
+    the text left in order of appearance, and cleaning the result again changes nothing."""
+    import random
+
+    rng = random.Random(20261117)
+    for _ in range(3000):
+        count = rng.choice([0, 1, 3, 8, 12])
+        text = "".join(rng.choice("[[]]0129 a") for _ in range(rng.randint(0, 40)))
+
+        cleaned, cited = clean_citations(text, count)
+
+        tokens = re.findall(r"\[([0-9]+)\]", cleaned)
+        assert all(t[0] != "0" and 1 <= int(t) <= count for t in tokens), (text, cleaned)
+        assert cited == list(dict.fromkeys(int(t) for t in tokens)), (text, cleaned, cited)
+        assert clean_citations(cleaned, count) == (cleaned, cited), text

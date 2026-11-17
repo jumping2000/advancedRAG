@@ -35,6 +35,7 @@ import pytest
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.chat import service
@@ -42,7 +43,7 @@ from app.chat.prompt import SYSTEM_INSTRUCTIONS
 from app.chat.repository import AnswerInProgress, ConversationRepository, KbNotVisible
 from app.config import Settings
 from app.db.models import IndexingProfile, User
-from app.ingestion.profile import ensure_profile
+from app.ingestion.profile import ProfileSetupError, ensure_profile
 from app.main import create_app
 from app.run import migrate
 from tests.conftest import TEST_REDIS_URL, make_settings
@@ -684,7 +685,9 @@ async def test_AC_013_the_provider_gets_the_model_stream_true_and_the_instructio
 async def test_AC_012_the_request_holds_8_numbered_chunks_the_last_6_completed_messages_and_the_question(
     chat: Chat,
 ) -> None:
-    """4 completed exchanges and a failed one, a KB with 12 relevant chunks of two documents."""
+    """4 completed exchanges and a failed one, a KB with 12 relevant chunks of two documents. The failed exchange (the
+    failed answer and the question it answered) is not part of the history, so the roles alternate; the last 6 are
+    taken among the 8 messages of the completed exchanges."""
     first = await seed(
         chat,
         [
@@ -715,14 +718,15 @@ async def test_AC_012_the_request_holds_8_numbered_chunks_the_last_6_completed_m
         events = events_of(await ask(api, conversation, QUESTION))
 
     messages = request_messages(chat)
-    # the last 6 completed messages: the failed answer is out, the user messages count, the oldest ones fall off
+    # the last 6 messages of the completed exchanges: the failed answer and its question (domanda 5) are out, the user
+    # messages count, the oldest ones fall off; the roles alternate
     assert messages[1:7] == [
+        {"role": "user", "content": "domanda 2"},
         {"role": "assistant", "content": "risposta 2 [1]"},
         {"role": "user", "content": "domanda 3"},
         {"role": "assistant", "content": "risposta 3 [1]"},
         {"role": "user", "content": "domanda 4"},
         {"role": "assistant", "content": "risposta 4 [1]"},
-        {"role": "user", "content": "domanda 5"},
     ]
     assert messages[0]["role"] == "system"
     assert messages[7]["role"] == "user"
@@ -730,6 +734,8 @@ async def test_AC_012_the_request_holds_8_numbered_chunks_the_last_6_completed_m
     assert len(messages) == 8
     assert "TESTO-PARZIALE-DELLA-RISPOSTA-FALLITA" not in json.dumps(messages)
     assert "domanda 1" not in json.dumps(messages)
+    assert "domanda 5" not in json.dumps(messages)  # the question of the failed answer is out too
+    assert [m["role"] for m in messages] == ["system", *["user", "assistant"] * 3, "user"]  # the roles alternate
     # 8 chunks of 12, numbered from 1 in the order of the search, with document, section and pages
     blocks = sources_in(messages[7]["content"])
     assert [b.number for b in blocks] == list(range(1, 9))
@@ -1193,9 +1199,9 @@ async def test_any_other_exception_still_ends_the_answer_as_failed_and_logs_no_c
             events = events_of(await ask_new(api, chat.kb_a, QUESTION))
 
     assert names_of(events) == ["conversation", "error"]
-    assert events[1][1]["error"]["code"] in {"generation_error", "embedding_error"}
+    assert events[1][1]["error"]["code"] == "internal_error"
     (_, answer) = await fetch(chat.engine, "select * from messages order by created_at, id")
-    assert (answer["status"], answer["content"]) == ("FAILED", "")
+    assert (answer["status"], answer["error_code"], answer["content"]) == ("FAILED", "internal_error", "")
     assert await pending_count(chat.engine) == 0
     assert "TESTO-SEGRETO" not in "\n".join(line for _, line in logs.lines)
     assert chat.provider.requests == []
@@ -1213,12 +1219,13 @@ async def test_a_failed_answer_is_not_part_of_the_next_request_and_the_question_
 
     assert names_of(first)[-1] == "error"
     assert done_message(second)["status"] == "COMPLETED"
-    # the second request: the instructions, the question that got no answer, the new question
+    # the second request: the instructions and the new question; the failed exchange (the question that got no answer
+    # and the failed answer) is not part of the history
     second_request = request_messages(chat, 1)
-    assert len(second_request) == 3
-    assert second_request[1] == {"role": "user", "content": "Prima domanda"}
-    assert second_request[2]["role"] == "user"
-    assert second_request[2]["content"].endswith(QUESTION)
+    assert len(second_request) == 2
+    assert second_request[1]["role"] == "user"
+    assert second_request[1]["content"].endswith(QUESTION)
+    assert "Prima domanda" not in json.dumps(second_request)
     assert await pending_count(chat.engine) == 0
 
 
@@ -1467,6 +1474,7 @@ async def test_fail_answer_ends_a_pending_answer_without_text_and_it_cannot_be_c
 
 
 async def test_history_is_the_completed_messages_before_a_message_in_order_and_limited(chat: Chat) -> None:
+    """A failed answer and the question it answered are not part of the history; the limit counts what is left."""
     conversation_id = await add_conversation(
         chat.engine,
         chat.kb_a,
@@ -1483,9 +1491,278 @@ async def test_history_is_the_completed_messages_before_a_message_in_order_and_l
         conversation = await repository.get_for(await chat.user(session, "mario"), conversation_id)
         assert conversation is not None
         everything = await repository.history(conversation, 10)
-        assert [m.content for m in everything] == ["u1", "a1", "u2", "u3"]
-        assert [m.content for m in await repository.history(conversation, 2)] == ["u2", "u3"]
+        # the failed exchange (u2 and its failed answer) is out; u3 is the question of a pending answer
+        assert [m.content for m in everything] == ["u1", "a1", "u3"]
+        assert [m.content for m in await repository.history(conversation, 2)] == ["a1", "u3"]
         assert await repository.history(conversation, 0) == []
         u3 = everything[-1]
-        assert [m.content for m in await repository.history(conversation, 10, before=u3)] == ["u1", "a1", "u2"]
-        assert [m.content for m in await repository.history(conversation, 2, before=u3)] == ["a1", "u2"]
+        assert [m.content for m in await repository.history(conversation, 10, before=u3)] == ["u1", "a1"]
+        assert [m.content for m in await repository.history(conversation, 1, before=u3)] == ["a1"]
+
+
+# The history: the failed exchange is out, the limit counts the messages that are sent ---------------------------
+
+
+async def history_contents(
+    chat: Chat, conversation_id: uuid.UUID, limit: int, before_question: bool = False
+) -> list[str]:
+    """The contents of `ConversationRepository.history` (with a new question saved at the end when asked)."""
+    async with chat.sessions()() as session:
+        repository = ConversationRepository(session)
+        conversation = await repository.get_for(await chat.user(session, "mario"), conversation_id)
+        assert conversation is not None
+        before = None
+        if before_question:
+            before, _ = await repository.start_answer(conversation, "nuova domanda")
+        return [m.content for m in await repository.history(conversation, limit, before=before)]
+
+
+async def test_history_leaves_out_every_failed_exchange_the_failed_answer_and_the_question_it_answered(
+    chat: Chat,
+) -> None:
+    failed = ("assistant", "parziale", "FAILED", "generation_error")
+    conversation = await add_conversation(
+        chat.engine,
+        chat.kb_a,
+        chat.users["mario"],
+        ("user", "u1"),
+        ("assistant", "a1"),
+        ("user", "u2"),
+        failed,
+        ("user", "u3"),
+        failed,
+        ("user", "u4"),
+        ("assistant", "a4"),
+        ("user", "u5"),
+        ("assistant", "", "FAILED", "interrupted"),
+    )
+
+    assert await history_contents(chat, conversation, 10) == ["u1", "a1", "u4", "a4"]
+    assert await history_contents(chat, conversation, 3) == ["a1", "u4", "a4"]  # the limit counts what is left
+    assert await history_contents(chat, conversation, 10, before_question=True) == ["u1", "a1", "u4", "a4"]
+
+
+async def test_history_ends_with_the_last_completed_answer_when_the_exchange_before_the_question_failed(
+    chat: Chat,
+) -> None:
+    conversation = await add_conversation(
+        chat.engine,
+        chat.kb_a,
+        chat.users["mario"],
+        ("user", "u1"),
+        ("assistant", "a1"),
+        ("user", "u2"),
+        ("assistant", "parziale", "FAILED", "generation_timeout"),
+    )
+
+    assert await history_contents(chat, conversation, 6, before_question=True) == ["u1", "a1"]
+
+
+async def test_history_takes_the_last_n_messages_with_text_so_an_empty_answer_does_not_shorten_it(chat: Chat) -> None:
+    """An answer saved with the notice `no_documents` has no text and is never sent: it must not use a place of the
+    limit, or the history would be shorter than `CHAT_HISTORY_MESSAGES`."""
+    conversation = await add_conversation(
+        chat.engine,
+        chat.kb_a,
+        chat.users["mario"],
+        ("user", "u1"),
+        ("assistant", "a1"),
+        ("user", "u2"),
+        ("assistant", ""),
+        ("user", "u3"),
+        ("assistant", "  \n"),
+        ("user", "u4"),
+        ("assistant", "a4"),
+    )
+
+    assert await history_contents(chat, conversation, 4) == ["u2", "u3", "u4", "a4"]
+    assert await history_contents(chat, conversation, 5) == ["a1", "u2", "u3", "u4", "a4"]
+    assert await history_contents(chat, conversation, 10) == ["u1", "a1", "u2", "u3", "u4", "a4"]
+
+
+async def test_the_request_holds_as_many_history_messages_as_the_limit_when_some_have_no_text(chat: Chat) -> None:
+    await seed(chat, [chunk_row(0)])
+    conversation = await add_conversation(
+        chat.engine,
+        chat.kb_a,
+        chat.users["mario"],
+        ("user", "u1"),
+        ("assistant", "a1"),
+        ("user", "u2"),
+        ("assistant", ""),
+        ("user", "u3"),
+        ("assistant", "a3"),
+    )
+
+    async with chat.api("mario", chat_history_messages=4) as api:
+        assert names_of(events_of(await ask(api, conversation, QUESTION)))[-1] == "done"
+
+    assert [m["content"] for m in request_messages(chat)[1:-1]] == ["a1", "u2", "u3", "a3"]
+
+
+async def test_the_roles_of_the_request_alternate_after_failed_exchanges(chat: Chat) -> None:
+    await seed(chat, [chunk_row(0)])
+    failed = ("assistant", "parziale", "FAILED", "generation_error")
+    conversation = await add_conversation(
+        chat.engine,
+        chat.kb_a,
+        chat.users["mario"],
+        ("user", "u1"),
+        ("assistant", "a1"),
+        ("user", "u2"),
+        failed,
+        ("user", "u3"),
+        failed,
+        ("user", "u4"),
+        ("assistant", "a4"),
+    )
+
+    async with chat.api("mario") as api:
+        assert names_of(events_of(await ask(api, conversation, QUESTION)))[-1] == "done"
+
+    messages = request_messages(chat)
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user", "assistant", "user"]
+    assert [m["content"] for m in messages[1:5]] == ["u1", "a1", "u4", "a4"]
+
+
+# An unexpected failure is `internal_error`, not a failure of the provider ------------------------------------------
+
+
+def _raising(error: Exception) -> Any:
+    async def broken(*_: Any, **__: Any) -> Any:
+        raise error
+
+    return broken
+
+
+@pytest.mark.parametrize("where", ["profile", "database", "prompt", "saving"])
+async def test_an_unexpected_failure_is_internal_error_and_is_neither_the_provider_nor_ollama(
+    chat: Chat, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    await seed(chat, [chunk_row(0)])
+    secret = "TESTO-SEGRETO-DELLA-DOMANDA"
+    if where == "profile":
+        monkeypatch.setattr(service, "active_profile", _raising(ProfileSetupError(f"EMBEDDING_MODEL {secret}")))
+    elif where == "database":
+        monkeypatch.setattr(service, "bm25_search", _raising(OperationalError("select", {}, Exception(secret))))
+    elif where == "prompt":
+
+        def broken_prompt(*_: Any, **__: Any) -> Any:
+            raise ValueError(secret)
+
+        monkeypatch.setattr(service, "build_messages", broken_prompt)
+    else:
+        monkeypatch.setattr(ConversationRepository, "complete_answer", _raising(RuntimeError(secret)))
+
+    with all_logs() as logs:
+        async with chat.api("mario") as api:
+            events = events_of(await ask_new(api, chat.kb_a, QUESTION))
+
+    assert names_of(events)[0] == "conversation"
+    assert names_of(events)[-1] == "error"
+    assert "done" not in names_of(events)
+    error = events[-1][1]["error"]
+    assert error["code"] == "internal_error"
+    assert isinstance(error["message"], str)
+    assert error["message"]
+    assert secret not in error["message"]
+    (_, answer) = await fetch(chat.engine, "select * from messages order by created_at, id")
+    assert (answer["status"], answer["error_code"], answer["content"]) == ("FAILED", "internal_error", "")
+    assert await pending_count(chat.engine) == 0
+    assert secret not in "\n".join(line for _, line in logs.lines)
+
+
+async def test_the_failures_of_ollama_and_of_the_provider_keep_their_own_codes(chat: Chat) -> None:
+    await seed(chat, [chunk_row(0)])
+
+    async with chat.api("mario") as api:
+        chat.ollama.fail_status = 500
+        embedding = events_of(await ask_new(api, chat.kb_a, "uno"))
+        chat.ollama.fail_status = None
+        chat.provider.fail_status = 500
+        generation = events_of(await ask_new(api, chat.kb_a, "due"))
+
+    assert embedding[-1][1]["error"]["code"] == "embedding_error"
+    assert generation[-1][1]["error"]["code"] == "generation_error"
+
+
+# The citations that are left in the answer are all sources ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "saved", "shown"),
+    [
+        ("Vedi [[9]1] qui", "Vedi [1] qui", [1]),  # removing [9] makes a new valid token
+        ("Vedi [1[9]] qui", "Vedi [1] qui", [1]),
+        ("Vedi [[[9]9]2] qui", "Vedi [2] qui", [2]),
+    ],
+)
+async def test_AC_017_a_token_made_by_the_removal_of_another_is_a_cited_source_too(
+    chat: Chat, text: str, saved: str, shown: list[int]
+) -> None:
+    await seed(chat, [chunk_row(i) for i in range(3)])
+    chat.provider.fragments = [text]
+
+    async with chat.api("mario") as api:
+        events = events_of(await ask_new(api, chat.kb_a, QUESTION))
+
+    message = done_message(events)
+    assert message["content"] == saved
+    assert [source["number"] for source in message["sources"]] == shown
+    stored = await sources_of(chat.engine, message["id"])
+    assert [r["number"] for r in stored if r["cited"]] == shown
+    (row,) = await fetch(chat.engine, "select content from messages where id = :id", id=uuid.UUID(message["id"]))
+    assert row["content"] == saved
+
+
+# The title and the repository --------------------------------------------------------------------------------------
+
+
+async def test_AC_021_the_title_does_not_end_with_a_space(chat: Chat) -> None:
+    await seed(chat, [chunk_row(0)])
+    question = "a" * 79 + " " + "b" * 30  # the 80th character is a space
+
+    async with chat.api("mario") as api:
+        assert names_of(events_of(await ask_new(api, chat.kb_a, question)))[-1] == "done"
+
+    (conversation,) = await fetch(chat.engine, "select title from conversations")
+    assert conversation["title"] == "a" * 79
+
+
+async def test_fail_answer_tells_whether_it_changed_the_answer(chat: Chat) -> None:
+    conversation_id = await add_conversation(chat.engine, chat.kb_a, chat.users["mario"], ("user", "q"))
+    async with chat.sessions()() as session:
+        repository = ConversationRepository(session)
+        conversation = await repository.get_for(await chat.user(session, "mario"), conversation_id)
+        assert conversation is not None
+        _, pending = await repository.start_answer(conversation, "domanda")
+        assert await repository.fail_answer(pending.id, "interrupted") is True
+        assert await repository.fail_answer(pending.id, "generation_error") is False  # already failed: no change
+        _, other = await repository.start_answer(conversation, "altra")
+        assert await repository.complete_answer(other.id, "ok", None, []) is not None
+        assert await repository.fail_answer(other.id, "interrupted") is False  # completed: no change
+        assert await repository.fail_answer(uuid.uuid4(), "interrupted") is False  # no such message
+
+    (row,) = await fetch(chat.engine, "select status, error_code from messages where id = :id", id=pending.id)
+    assert (row["status"], row["error_code"]) == ("FAILED", "interrupted")  # the first code stays
+
+
+async def test_a_conversation_deleted_while_the_answer_is_generated_ends_the_stream_without_done_or_error(
+    chat: Chat,
+) -> None:
+    """Confirmed by the owner: nobody is waiting for the answer of a conversation that is gone, so the stream just ends
+    after the events it already sent."""
+    await seed(chat, [chunk_row(0)])
+    chat.provider.delay_seconds = 30.0
+
+    async with chat.api("mario") as api:
+        asking = asyncio.create_task(ask_new(api, chat.kb_a, QUESTION))
+        assert await asyncio.to_thread(chat.provider.request_received.wait, 15), "the provider got no request"
+        async with chat.engine.begin() as connection:
+            await connection.execute(text("delete from conversations"))
+        chat.provider.release.set()
+        events = events_of(await asyncio.wait_for(asking, 15))
+
+    assert names_of(events)[0] == "conversation"
+    assert set(names_of(events)) <= {"conversation", "delta"}  # no `done`, no `error`
+    assert await table_counts(chat.engine) == (0, 0, 0)
