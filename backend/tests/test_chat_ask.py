@@ -986,8 +986,8 @@ async def test_AC_021_the_title_is_the_first_80_characters_of_the_question_witho
         events = events_of(await ask_new(api, chat.kb_a, question))
 
     (conversation,) = await fetch(chat.engine, "select * from conversations")
-    assert conversation["title"] == question.strip()[:80]
-    assert len(conversation["title"]) == 80
+    assert conversation["title"] == question.strip()[:80].rstrip()  # the 80th character is a space: it is cut too
+    assert len(conversation["title"]) == 79
     assert conversation["kb_id"] == chat.kb_a
     assert conversation["user_id"] == chat.users["mario"]
     assert events[0][1]["conversation_id"] == str(conversation["id"])
