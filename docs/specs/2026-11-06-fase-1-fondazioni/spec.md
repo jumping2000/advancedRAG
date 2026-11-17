@@ -176,3 +176,4 @@ vede e apre solo quella; `python3 scripts/verify.py` e la CI sono verdi, inclusi
 
 ## Revisions
 - 2026-11-07: REQ-001/AC-001 (quattro servizi Compose diventano cinque, con `worker`) e REQ-003/AC-005 (l'elenco dei controlli di `GET /api/health` include `worker`) sono rivisti da SPEC-2026-11-07-fase-2-ingestion (REQ-001, AC-001, AC-002); i test `test_stack.py` e `test_health.py` si aggiornano con il task T-04 di quella spec.
+- 2026-11-17: REQ-003/AC-005 (l'elenco e i valori dei controlli di `GET /api/health` includono `generation` con lo stato `not_configured`) e UC-005 (aprire una KB mostra la chat) sono rivisti da SPEC-2026-11-17-fase-3-chat (REQ-002, REQ-019, AC-004, AC-005); `test_health.py` si aggiorna con il task T-01 di quella spec.
