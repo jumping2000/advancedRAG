@@ -190,3 +190,94 @@ def test_compose_passes_the_generation_settings_to_the_backend_and_not_to_the_wo
         assert f"{name}: ${{{name}:-" in backend, f"{name} is not passed to the backend"
         assert name not in worker
     assert "GENERATION_TIMEOUT_SECONDS: ${GENERATION_TIMEOUT_SECONDS:-300}" in backend
+
+
+# Review of T-01: GENERATION_BASE_URL must be an http or https URL with a host (owner's decision, 2026-11-17) ----------
+
+NOT_A_BASE_URL = [
+    pytest.param("ollama:11434/v1", id="scheme-missing-host-and-port"),
+    pytest.param("provider.example.internal/v1", id="host-and-path-only"),
+    pytest.param("localhost:8000", id="localhost-and-port"),
+    pytest.param("ftp://provider.example.internal/v1", id="ftp"),
+    pytest.param("file:///etc/passwd", id="file"),
+    pytest.param("http://", id="http-without-host"),
+    pytest.param("https://", id="https-without-host"),
+    pytest.param("http:///v1", id="empty-host"),
+    pytest.param("//provider.example.internal/v1", id="no-scheme"),
+    pytest.param("http://provider.example.internal:port/v1", id="port-not-a-number"),
+    pytest.param("http://provider example.internal/v1", id="space-in-the-host"),
+]
+
+
+@pytest.mark.parametrize("url", NOT_A_BASE_URL)
+def test_a_generation_base_url_that_is_not_an_http_url_with_a_host_is_refused_naming_the_variable(url: str) -> None:
+    with pytest.raises(ValidationError) as refused:
+        make_settings(generation_base_url=url, generation_model="gpt-test")
+
+    assert "GENERATION_BASE_URL" in str(refused.value)  # the variable as written in .env
+
+
+def test_the_refusal_of_a_base_url_does_not_show_the_key() -> None:
+    with pytest.raises(ValidationError) as refused:
+        make_settings(generation_base_url="ollama:11434/v1", generation_model="m", generation_api_key="sk-chiave-xyz")
+
+    assert "sk-chiave-xyz" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://provider.example.internal",
+        "http://provider.example.internal/v1",
+        "http://provider.example.internal/v1/",
+        "https://api.openai.com/v1",
+        "HTTPS://API.OPENAI.COM/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://[::1]:11434/v1",
+        "http://ollama:11434/v1",
+        "  http://ollama:11434/v1  ",
+    ],
+)
+def test_a_valid_generation_base_url_starts(url: str) -> None:
+    settings = make_settings(generation_base_url=url, generation_model="gpt-test")
+
+    assert settings.generation_base_url == url.strip()
+
+
+@pytest.mark.parametrize("url", ["ollama:11434/v1", "ftp://x", "http://"])
+def test_the_backend_does_not_start_with_a_base_url_that_is_not_a_url(
+    backend_env: list[str], monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv("GENERATION_BASE_URL", url)
+    monkeypatch.setenv("GENERATION_MODEL", "gpt-test")
+
+    with pytest.raises(ValidationError) as refused:
+        run.main()
+
+    assert "GENERATION_BASE_URL" in str(refused.value)
+    assert backend_env == []  # neither the migrations nor uvicorn
+
+
+def test_the_backend_does_not_start_with_a_base_url_that_is_not_a_url_in_the_env_file(
+    backend_env: list[str], tmp_path: Path
+) -> None:
+    (tmp_path / ".env").write_text("GENERATION_BASE_URL=ollama:11434/v1\nGENERATION_MODEL=gpt-test\n", encoding="utf-8")
+
+    with pytest.raises(ValidationError) as refused:
+        run.main()
+
+    assert "GENERATION_BASE_URL" in str(refused.value)
+    assert backend_env == []
+
+
+def test_the_backend_starts_with_a_valid_base_url_with_or_without_a_trailing_slash(
+    backend_env: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GENERATION_MODEL", "gpt-test")
+    for url in (PROVIDER_URL, PROVIDER_URL + "/"):
+        monkeypatch.setenv("GENERATION_BASE_URL", url)
+        get_settings.cache_clear()
+        with pytest.raises(SystemExit, match="settings were accepted"):
+            run.main()
+
+    assert backend_env == ["migrate", "migrate"]
