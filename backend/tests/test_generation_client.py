@@ -1,0 +1,491 @@
+# SPEC-2026-11-17-fase-3-chat
+"""The streaming client of an OpenAI-compatible provider (T-01): AC-003 and `check` for AC-005.
+
+The client runs against `fake_generation_provider` (real sockets). The tests of the plan's "Review focus" on abnormal
+provider streams have no AC of T-01: a stream is either read whole or it is `generation_error`/`generation_timeout`.
+Decision for the stream that ends without `[DONE]`: it finished normally only if a `finish_reason` was seen; otherwise
+it is `generation_error`, even when text was received (the text already yielded is the caller's to discard).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+import time
+from typing import Any
+
+import pytest
+
+from app.chat.generation import ChatMessage, GenerationError, OpenAICompatibleClient
+from tests.fakes.http_server import closed_port_url
+from tests.fakes.services import (
+    FakeGenerationProvider,
+    GenerationStep,
+    delta_event,
+    fake_generation_provider,
+    finish_event,
+    sse_data,
+)
+
+QUESTION = "Qual è il prezzo del servizio? ☃"
+MESSAGES: list[ChatMessage] = [
+    {"role": "system", "content": "Rispondi solo in base alle fonti."},
+    {"role": "user", "content": QUESTION},
+]
+MODEL = "modello-di-prova"
+KEY = "sk-chiave-segreta-123"
+DONE = sse_data("[DONE]")
+
+
+def make_client(
+    provider: FakeGenerationProvider | str, api_key: str | None = None, timeout: float = 10.0
+) -> OpenAICompatibleClient:
+    url = provider if isinstance(provider, str) else provider.url
+    return OpenAICompatibleClient(base_url=url, model=MODEL, api_key=api_key, timeout=timeout)
+
+
+async def read_all(client: OpenAICompatibleClient) -> tuple[list[str], GenerationError | None]:
+    """The fragments received and the error that ended the stream, if any."""
+    fragments: list[str] = []
+    try:
+        async for fragment in client.stream(MESSAGES):
+            fragments.append(fragment)
+    except GenerationError as error:
+        return fragments, error
+    return fragments, None
+
+
+async def fragments_of(provider: FakeGenerationProvider) -> list[str]:
+    fragments, error = await read_all(make_client(provider))
+    assert error is None
+    return fragments
+
+
+def assert_fixed_message(error: GenerationError, *forbidden: str) -> None:
+    """The message is fixed text: never the prompt, the response body or the key."""
+    text = f"{error!s} {error!r}"
+    for secret in (QUESTION, KEY, "failure on purpose", *forbidden):
+        assert secret not in text
+
+
+# The request (AC-003) -----------------------------------------------------------------------------------------------
+
+
+async def test_SPEC_2026_11_17_fase_3_chat_AC_003_the_request_has_model_messages_stream_and_key() -> None:
+    with fake_generation_provider() as provider:
+        fragments, error = await read_all(make_client(provider, api_key=KEY))
+
+    assert error is None
+    assert fragments == ["Ciao", " mondo"]
+    [request] = provider.requests
+    assert (request.method, request.path) == ("POST", "/v1/chat/completions")
+    assert request.authorization == f"Bearer {KEY}"
+    assert request.body == {"model": MODEL, "messages": MESSAGES, "stream": True}
+
+
+@pytest.mark.parametrize("api_key", [None, ""])
+async def test_SPEC_2026_11_17_fase_3_chat_AC_003_without_a_key_there_is_no_authorization_header(
+    api_key: str | None,
+) -> None:
+    with fake_generation_provider() as provider:
+        fragments, error = await read_all(make_client(provider, api_key=api_key))
+
+    assert error is None
+    assert fragments == ["Ciao", " mondo"]
+    [request] = provider.requests
+    assert request.authorization is None
+    assert request.body["model"] == MODEL
+
+
+async def test_a_trailing_slash_in_the_base_url_is_ignored() -> None:
+    with fake_generation_provider() as provider:
+        client = make_client(provider.url + "/")
+        assert await read_all(client) == (["Ciao", " mondo"], None)
+
+    assert [request.path for request in provider.requests] == ["/v1/chat/completions"]
+
+
+# Streaming ----------------------------------------------------------------------------------------------------------
+
+
+async def test_the_fragments_arrive_in_order_one_per_event() -> None:
+    with fake_generation_provider(fragments=["uno", " due", " tre", " quattro"]) as provider:
+        assert await fragments_of(provider) == ["uno", " due", " tre", " quattro"]
+
+
+async def test_the_first_fragment_is_yielded_before_the_provider_has_sent_the_second() -> None:
+    gate = threading.Event()
+    script: list[GenerationStep] = [delta_event("uno"), gate, delta_event(" due"), finish_event(), DONE]
+    with fake_generation_provider(script=script) as provider:
+        stream = make_client(provider).stream(MESSAGES)
+        try:
+            first = await asyncio.wait_for(anext(stream), 5)
+            assert first == "uno"
+            assert not gate.is_set()  # the provider is still holding back the rest
+            gate.set()
+            assert [fragment async for fragment in stream] == [" due"]
+        finally:
+            gate.set()
+            await stream.aclose()
+
+
+async def test_closing_the_stream_early_closes_the_connection_to_the_provider() -> None:
+    script: list[GenerationStep] = [delta_event("uno")] + [0.1, delta_event("x")] * 100
+    with fake_generation_provider(script=script) as provider:
+        stream = make_client(provider).stream(MESSAGES)
+        assert await asyncio.wait_for(anext(stream), 5) == "uno"
+        await stream.aclose()
+
+        assert await asyncio.to_thread(provider.client_closed.wait, 5)
+
+
+# Abnormal streams (plan Review focus) -------------------------------------------------------------------------------
+
+
+async def test_a_data_line_split_between_packets_is_read_whole() -> None:
+    event = delta_event("Ciao mondo")
+    cuts = [10, 40, len(event) - 3]  # inside "data: ", inside the JSON, inside the final blank lines
+    script: list[GenerationStep] = []
+    start = 0
+    for cut in cuts:
+        script += [event[start:cut], 0.05]
+        start = cut
+    script += [event[start:], finish_event(), DONE]
+
+    with fake_generation_provider(script=script) as provider:
+        assert await fragments_of(provider) == ["Ciao mondo"]
+
+
+async def test_a_multibyte_character_split_between_packets_is_not_corrupted() -> None:
+    text = "è ☃ 😀 fine"
+    event = delta_event(text)
+    # one cut in the middle of each of the 2-, 3- and 4-byte characters
+    cuts = [event.index("è".encode()) + 1, event.index("☃".encode()) + 1, event.index("😀".encode()) + 2]
+    script: list[GenerationStep] = []
+    start = 0
+    for cut in cuts:
+        piece = event[start:cut]
+        with pytest.raises(UnicodeDecodeError):
+            piece.decode("utf-8")  # the fixture really splits a character
+        script += [piece, 0.05]
+        start = cut
+    script += [event[start:], finish_event(), DONE]
+
+    with fake_generation_provider(script=script) as provider:
+        assert await fragments_of(provider) == [text]
+
+
+async def test_unicode_line_separators_inside_the_text_do_not_end_the_line() -> None:
+    # U+2028, U+2029 and U+0085 are line ends for str.splitlines (and so for aiter_lines), but not for an event stream
+    text = "a b c\x85d"
+    with fake_generation_provider(script=[delta_event(text), finish_event(), DONE]) as provider:
+        assert await fragments_of(provider) == [text]
+
+
+async def test_crlf_line_endings_are_accepted() -> None:
+    body = (delta_event("Ciao") + finish_event() + DONE).replace(b"\n", b"\r\n")
+    with fake_generation_provider(script=[body]) as provider:
+        assert await fragments_of(provider) == ["Ciao"]
+
+
+async def test_events_without_text_are_skipped() -> None:
+    script: list[GenerationStep] = [
+        b": keepalive\n\n",
+        b"event: message\nid: 7\nretry: 100\n",
+        sse_data({"id": "x", "choices": []}),  # empty choices (Azure style prompt filter, or usage only)
+        sse_data({"choices": [{"index": 0, "delta": {"role": "assistant"}}]}),  # role only
+        sse_data({"choices": [{"index": 0, "delta": {"content": None}}]}),
+        sse_data({"choices": [{"index": 0, "delta": {"content": ""}}]}),
+        sse_data({"choices": [{"index": 0}]}),  # no delta at all
+        sse_data({"usage": {"total_tokens": 3}}),  # no choices key: metadata
+        delta_event("Ciao"),
+        sse_data({"choices": [{"index": 0, "delta": {}, "finish_reason": None}]}),
+        finish_event(),
+        DONE,
+    ]
+    with fake_generation_provider(script=script) as provider:
+        assert await fragments_of(provider) == ["Ciao"]
+
+
+async def test_only_the_first_choice_is_read() -> None:
+    choices = [{"index": 0, "delta": {"content": "primo"}}, {"index": 1, "delta": {"content": "secondo"}}]
+    with fake_generation_provider(script=[sse_data({"choices": choices}), finish_event(), DONE]) as provider:
+        assert await fragments_of(provider) == ["primo"]
+
+
+async def test_an_event_that_carries_text_and_finish_reason_together_keeps_the_text() -> None:
+    with fake_generation_provider(
+        script=[delta_event("Ciao"), delta_event("!", finish_reason="stop"), DONE]
+    ) as provider:
+        assert await fragments_of(provider) == ["Ciao", "!"]
+
+
+async def test_nothing_after_done_is_read() -> None:
+    with fake_generation_provider(
+        script=[delta_event("Ciao"), finish_event(), DONE, b"data: {not json\n\n"]
+    ) as provider:
+        assert await read_all(make_client(provider)) == (["Ciao"], None)
+
+
+async def test_a_stream_with_finish_reason_but_without_done_ends_normally() -> None:
+    with fake_generation_provider(script=[delta_event("Ciao"), finish_event()]) as provider:
+        assert await read_all(make_client(provider)) == (["Ciao"], None)
+
+
+async def test_a_last_done_without_final_newline_ends_normally() -> None:
+    with fake_generation_provider(script=[delta_event("Ciao"), b"data: [DONE]"]) as provider:
+        assert await read_all(make_client(provider)) == (["Ciao"], None)
+
+
+async def test_a_stream_closed_without_done_and_without_finish_reason_is_generation_error() -> None:
+    with fake_generation_provider(script=[delta_event("Ciao"), delta_event(" mondo")]) as provider:
+        fragments, error = await read_all(make_client(provider, api_key=KEY))
+
+    assert fragments == ["Ciao", " mondo"]  # the caller discards the partial text
+    assert error is not None
+    assert error.code == "generation_error"
+    assert_fixed_message(error)
+
+
+async def test_an_empty_stream_is_generation_error() -> None:
+    with fake_generation_provider(script=[]) as provider:
+        fragments, error = await read_all(make_client(provider))
+
+    assert (fragments, error is not None and error.code) == ([], "generation_error")
+
+
+async def test_a_stream_broken_in_the_middle_of_an_event_is_generation_error() -> None:
+    event = delta_event("Ciao mondo")
+    with fake_generation_provider(script=[delta_event("Ciao"), event[:25]], abort_after_body=True) as provider:
+        fragments, error = await read_all(make_client(provider))
+
+    assert fragments == ["Ciao"]
+    assert error is not None
+    assert error.code == "generation_error"
+
+
+async def test_a_connection_dropped_after_a_whole_event_is_generation_error() -> None:
+    with fake_generation_provider(script=[delta_event("Ciao")], abort_after_body=True) as provider:
+        fragments, error = await read_all(make_client(provider))
+
+    assert fragments == ["Ciao"]
+    assert error is not None
+    assert error.code == "generation_error"
+
+
+async def test_an_error_object_inside_the_stream_is_generation_error_without_its_text() -> None:
+    error_event = sse_data({"error": {"message": "il modello ha detto SEGRETO", "type": "server_error"}})
+    with fake_generation_provider(script=[delta_event("Ciao"), error_event, delta_event("dopo"), DONE]) as provider:
+        fragments, error = await read_all(make_client(provider))
+
+    assert fragments == ["Ciao"]  # nothing after the error is read
+    assert error is not None
+    assert error.code == "generation_error"
+    assert_fixed_message(error, "SEGRETO")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(b"data: {non e' json\n\n", id="malformed-json"),
+        pytest.param(b"data: \n\n", id="empty-data"),
+        pytest.param(b"data: [1, 2]\n\n", id="json-not-an-object"),
+        pytest.param(sse_data({"choices": "no"}), id="choices-not-a-list"),
+        pytest.param(sse_data({"choices": ["no"]}), id="choice-not-an-object"),
+        pytest.param(sse_data({"choices": [{"delta": "no"}]}), id="delta-not-an-object"),
+        pytest.param(sse_data({"choices": [{"delta": {"content": ["x"]}}]}), id="content-not-a-string"),
+        pytest.param(sse_data({"choices": [{"delta": {}, "finish_reason": "error"}]}), id="finish-reason-error"),
+        pytest.param(b'{"error": {"message": "x"}}\n', id="json-body-without-data-prefix"),
+        pytest.param(b"\xff\xfe\n\n", id="invalid-utf8"),
+        pytest.param(b"data: " + b"x" * (1024 * 1024 + 10) + b"\n\n", id="line-too-long"),
+    ],
+)
+async def test_a_malformed_event_is_generation_error(bad: bytes) -> None:
+    with fake_generation_provider(
+        script=[delta_event("Ciao"), bad, delta_event("dopo"), finish_event(), DONE]
+    ) as provider:
+        fragments, error = await read_all(make_client(provider, api_key=KEY))
+
+    assert fragments == ["Ciao"]  # what was valid before is delivered; nothing after the bad event is
+    assert error is not None
+    assert error.code == "generation_error"
+    assert_fixed_message(error)
+
+
+# Errors before the stream -------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [400, 401, 404, 429, 500, 503])
+async def test_a_status_that_is_not_2xx_is_generation_error_without_the_body(status: int) -> None:
+    with fake_generation_provider(fail_status=status) as provider:
+        fragments, error = await read_all(make_client(provider, api_key=KEY))
+
+    assert fragments == []
+    assert error is not None
+    assert error.code == "generation_error"
+    assert_fixed_message(error)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": {"message": "failure on purpose", "type": "invalid_request_error"}},
+        {"id": "x", "object": "chat.completion", "choices": [{"message": {"role": "assistant", "content": "Ciao"}}]},
+        "failure on purpose",
+    ],
+    ids=["error-body", "answer-without-stream", "json-string"],
+)
+async def test_a_200_with_a_json_body_instead_of_a_stream_is_generation_error(body: Any) -> None:
+    with fake_generation_provider(json_body=body) as provider:
+        fragments, error = await read_all(make_client(provider, api_key=KEY))
+
+    assert fragments == []
+    assert error is not None
+    assert error.code == "generation_error"
+    assert_fixed_message(error)
+
+
+async def test_a_provider_that_cannot_be_reached_is_generation_error() -> None:
+    fragments, error = await read_all(make_client(closed_port_url() + "/v1", api_key=KEY))
+
+    assert fragments == []
+    assert error is not None
+    assert error.code == "generation_error"
+    assert_fixed_message(error)
+
+
+async def test_a_connection_closed_without_an_answer_is_generation_error() -> None:
+    with fake_generation_provider(drop_connection=True) as provider:
+        fragments, error = await read_all(make_client(provider))
+
+    assert fragments == []
+    assert error is not None
+    assert error.code == "generation_error"
+
+
+async def test_a_base_url_that_is_not_a_url_is_generation_error() -> None:
+    fragments, error = await read_all(make_client("non-un-url"))
+
+    assert fragments == []
+    assert error is not None
+    assert error.code == "generation_error"
+
+
+# Timeout ------------------------------------------------------------------------------------------------------------
+
+
+async def test_a_provider_that_does_not_answer_is_generation_timeout_after_the_timeout() -> None:
+    with fake_generation_provider(delay_seconds=30) as provider:
+        started = time.monotonic()
+        fragments, error = await read_all(make_client(provider, timeout=0.5))
+        elapsed = time.monotonic() - started
+
+    assert fragments == []
+    assert error is not None
+    assert error.code == "generation_timeout"
+    assert 0.4 <= elapsed < 3.0
+    assert_fixed_message(error)
+
+
+async def test_a_stream_that_stalls_after_the_first_fragment_is_generation_timeout() -> None:
+    stall = threading.Event()
+    try:
+        with fake_generation_provider(script=[delta_event("Ciao"), stall]) as provider:
+            fragments, error = await read_all(make_client(provider, timeout=0.5))
+    finally:
+        stall.set()
+
+    assert fragments == ["Ciao"]
+    assert error is not None
+    assert error.code == "generation_timeout"
+
+
+async def test_the_timeout_bounds_the_whole_generation_not_the_silence_between_fragments() -> None:
+    # a fragment every 0.2 s for 4 s: no pause is longer than the timeout, the generation as a whole is
+    script: list[GenerationStep] = []
+    for number in range(20):
+        script += [0.2, delta_event(f"{number} ")]
+    script += [finish_event(), DONE]
+    with fake_generation_provider(script=script) as provider:
+        started = time.monotonic()
+        fragments, error = await read_all(make_client(provider, timeout=1.0))
+        elapsed = time.monotonic() - started
+
+    assert error is not None
+    assert error.code == "generation_timeout"
+    assert 0 < len(fragments) < 20
+    assert elapsed < 3.0
+
+
+async def test_a_generation_that_ends_before_the_timeout_is_not_cut() -> None:
+    with fake_generation_provider(fragments=["a", "b", "c"], fragment_delay_seconds=0.1) as provider:
+        fragments, error = await read_all(make_client(provider, timeout=5.0))
+
+    assert (fragments, error) == (["a", "b", "c"], None)
+
+
+async def test_the_task_can_be_cancelled_while_waiting_for_the_provider() -> None:
+    with fake_generation_provider(delay_seconds=30) as provider:
+        task = asyncio.ensure_future(read_all(make_client(provider, timeout=60)))
+        assert await asyncio.to_thread(provider.request_received.wait, 5)  # the client now waits for the answer
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+# GenerationError ----------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("code", ["generation_error", "generation_timeout"])
+def test_generation_error_carries_its_code_and_a_fixed_message(code: Any) -> None:
+    error = GenerationError(code)
+
+    assert error.code == code
+    assert str(error)
+    assert isinstance(error, Exception)
+
+
+# check() for the health of the provider (AC-005) ----------------------------------------------------------------------
+
+
+async def test_SPEC_2026_11_17_fase_3_chat_AC_005_check_is_ok_when_models_answers_2xx() -> None:
+    with fake_generation_provider() as provider:
+        state = await make_client(provider).check(2.0)
+
+    assert state == "ok"
+    [request] = provider.requests
+    assert (request.method, request.path) == ("GET", "/v1/models")
+    assert request.authorization is None
+
+
+async def test_SPEC_2026_11_17_fase_3_chat_AC_005_check_sends_the_bearer_key_when_there_is_one() -> None:
+    with fake_generation_provider() as provider:
+        assert await make_client(provider, api_key=KEY).check(2.0) == "ok"
+
+    assert provider.requests[0].authorization == f"Bearer {KEY}"
+
+
+@pytest.mark.parametrize("status", [301, 401, 404, 500, 503])
+async def test_SPEC_2026_11_17_fase_3_chat_AC_005_check_is_unreachable_for_a_status_that_is_not_2xx(
+    status: int,
+) -> None:
+    with fake_generation_provider(models_status=status) as provider:
+        assert await make_client(provider).check(2.0) == "unreachable"
+
+
+async def test_SPEC_2026_11_17_fase_3_chat_AC_005_check_is_unreachable_when_nothing_listens() -> None:
+    assert await make_client(closed_port_url() + "/v1").check(2.0) == "unreachable"
+
+
+async def test_SPEC_2026_11_17_fase_3_chat_AC_005_check_is_unreachable_in_time_for_a_slow_provider() -> None:
+    with fake_generation_provider(models_delay_seconds=30) as provider:
+        started = time.monotonic()
+        state = await make_client(provider, timeout=300).check(0.5)  # the timeout of `check` is the argument
+        elapsed = time.monotonic() - started
+
+    assert state == "unreachable"
+    assert elapsed < 2.0
+
+
+async def test_check_never_raises_for_a_base_url_that_is_not_a_url() -> None:
+    assert await make_client("non-un-url").check(1.0) == "unreachable"

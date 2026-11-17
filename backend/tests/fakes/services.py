@@ -373,3 +373,191 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# Fake generation provider (phase 3, T-01) --------------------------------------------------------------------------
+# Added after `main()` so that the code above stays as it was; `python -m tests.fakes.services` does not serve it.
+
+GenerationStep = bytes | float | threading.Event
+
+
+def sse_data(payload: Any) -> bytes:
+    """One server-sent event of the provider: `data: <json>` and a blank line; a str is sent as it is (`[DONE]`)."""
+    text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+    return f"data: {text}\n\n".encode()
+
+
+def delta_event(text: str, finish_reason: str | None = None) -> bytes:
+    """The event of a chunk of text, shaped like the OpenAI `chat.completion.chunk`."""
+    choice = {"index": 0, "delta": {"content": text}, "finish_reason": finish_reason}
+    return sse_data({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "choices": [choice]})
+
+
+def finish_event(reason: str = "stop") -> bytes:
+    """The last event before `[DONE]`: an empty delta with a `finish_reason`."""
+    choice = {"index": 0, "delta": {}, "finish_reason": reason}
+    return sse_data({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "choices": [choice]})
+
+
+@dataclass(frozen=True)
+class GenerationRequest:
+    """One request as the fake provider received it (`POST .../chat/completions` or `GET .../models`)."""
+
+    method: str
+    path: str
+    authorization: str | None
+    body: Any
+
+
+@dataclass
+class FakeGenerationProvider:
+    # The base URL to configure: it ends in `/v1`, so that the paths of the client are tested against a base path.
+    url: str = ""
+    # Every request received, in arrival order.
+    requests: list[GenerationRequest] = field(default_factory=list)
+    # The text fragments sent by `POST /v1/chat/completions`, one event each, then a `finish_reason` event and
+    # `[DONE]`. `script` replaces all of this when set.
+    fragments: list[str] = field(default_factory=lambda: ["Ciao", " mondo"])
+    # Seconds to wait before each fragment (0: none).
+    fragment_delay_seconds: float = 0.0
+    send_finish: bool = True
+    send_done: bool = True
+    # The exact body of the streamed answer, in order: bytes are written as one chunk of the HTTP body, a float is a
+    # pause in seconds, a threading.Event is waited for (at most 30 s). The test controls the packets with it.
+    script: list[GenerationStep] | None = None
+    # Close the connection abruptly after the body (no end of the chunked body): the client sees a broken stream.
+    abort_after_body: bool = False
+    # Answer this status with a JSON error body instead of a stream.
+    fail_status: int | None = None
+    # Answer 200 with `application/json` and this JSON body instead of a stream (an error that comes with 200).
+    json_body: Any = None
+    # Close the connection without answering the completion request.
+    drop_connection: bool = False
+    # Wait this long (or until `release` is set) before answering the completion request.
+    delay_seconds: float = 0.0
+    # `GET /v1/models`: the status, and the seconds to wait before answering (or until `release` is set).
+    models_status: int = 200
+    models_delay_seconds: float = 0.0
+    release: threading.Event = field(default_factory=threading.Event, repr=False)
+    # Set when a request arrives (any), and when a write to the client fails: the client closed the connection of the
+    # streamed answer.
+    request_received: threading.Event = field(default_factory=threading.Event, repr=False)
+    client_closed: threading.Event = field(default_factory=threading.Event, repr=False)
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def completions(self) -> list[GenerationRequest]:
+        return [request for request in self.requests if request.path.endswith("/chat/completions")]
+
+
+class _GenerationHandler(_Quiet):
+    server: _Server
+    protocol_version = "HTTP/1.1"  # chunked bodies, like a real provider
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # one packet per write
+
+    def _record(self, body: Any) -> FakeGenerationProvider:
+        state: FakeGenerationProvider = self.server.state
+        with state.lock:
+            state.requests.append(GenerationRequest(self.command, self.path, self.headers.get("Authorization"), body))
+        state.request_received.set()
+        return state
+
+    def _answer(self, status: int, body: Any) -> None:
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(payload)
+        self.close_connection = True
+
+    def do_GET(self) -> None:  # noqa: N802 (http.server API)
+        state = self._record(None)
+        if self.path != "/v1/models":
+            self._answer(404, {"error": "not found"})
+            return
+        if state.models_delay_seconds:
+            state.release.wait(state.models_delay_seconds)
+        self._answer(state.models_status, {"object": "list", "data": [{"id": "fake-model", "object": "model"}]})
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server API)
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        try:
+            body: Any = json.loads(raw)
+        except ValueError:
+            body = None
+        state = self._record(body)
+        if self.path != "/v1/chat/completions":
+            self._answer(404, {"error": "not found"})
+            return
+        if state.drop_connection:
+            self.close_connection = True
+            self.connection.shutdown(socket.SHUT_RDWR)
+            return
+        if state.delay_seconds:
+            state.release.wait(state.delay_seconds)
+        if state.fail_status is not None:
+            self._answer(state.fail_status, {"error": {"message": "failure on purpose", "type": "fake_error"}})
+            return
+        if state.json_body is not None:
+            self._answer(200, state.json_body)
+            return
+        self._stream(state)
+
+    def _steps(self, state: FakeGenerationProvider) -> list[GenerationStep]:
+        if state.script is not None:
+            return list(state.script)
+        steps: list[GenerationStep] = []
+        for fragment in state.fragments:
+            if state.fragment_delay_seconds:
+                steps.append(state.fragment_delay_seconds)
+            steps.append(delta_event(fragment))
+        if state.send_finish:
+            steps.append(finish_event())
+        if state.send_done:
+            steps.append(sse_data("[DONE]"))
+        return steps
+
+    def _stream(self, state: FakeGenerationProvider) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            self.wfile.flush()
+            for step in self._steps(state):
+                if isinstance(step, bytes):
+                    self.wfile.write(b"%x\r\n%s\r\n" % (len(step), step))
+                    self.wfile.flush()
+                elif isinstance(step, threading.Event):
+                    step.wait(30)
+                else:
+                    threading.Event().wait(step)
+            if not state.abort_after_body:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            else:
+                self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:  # BrokenPipeError, ConnectionResetError: the client hung up
+            state.client_closed.set()
+
+
+@contextmanager
+def fake_generation_provider(**modes: Any) -> Iterator[FakeGenerationProvider]:
+    """A fake OpenAI-compatible provider on a free local port; `modes` set the fields of FakeGenerationProvider."""
+    state = FakeGenerationProvider(**modes)
+    server = _Server(("127.0.0.1", 0), _GenerationHandler, state)
+    state.url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    _start(server)
+    try:
+        yield state
+    finally:
+        state.release.set()
+        server.shutdown()
+        server.server_close()
