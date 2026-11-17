@@ -568,3 +568,21 @@ async def test_a_client_that_goes_right_after_done_leaves_the_answer_completed_a
     assert await answer_state(chat) == ("COMPLETED", None)
     lines = [line for name, line in logs.lines if name.startswith("app.chat")]
     assert not any("failed" in line or "interrupted" in line for line in lines), lines
+
+
+async def test_the_stream_closed_at_the_first_event_of_the_generator_saves_the_answer_failed_interrupted(
+    chat: Chat,
+) -> None:
+    """The generator alone, without the response around it: closed while it is suspended at the `conversation` event."""
+    await seed(chat, [chunk_row(0)])
+    app, request, mario, conversation, (asked, answer) = await pending_question(chat)
+
+    stream = service.answer_events(request, mario, conversation, asked, answer)
+    first = await anext(stream)
+    await stream.aclose()  # type: ignore[attr-defined]
+    state = await eventually(lambda: answer_state(chat), within=5.0)
+    await app.state.engine.dispose()
+    await app.state.redis.aclose()
+
+    assert first.startswith("event: conversation\n")
+    assert state == ("FAILED", "interrupted"), "the answer stayed PENDING after the generator was closed"
