@@ -13,6 +13,7 @@ from app.api import health
 from app.auth import routes as auth
 from app.auth.deps import ApiError, api_error_handler, http_error_handler, require_json, validation_error_handler
 from app.auth.sessions import SessionStore
+from app.chat import routes as chat
 from app.config import Settings, get_settings
 from app.db.session import create_engine
 from app.documents import routes as documents
@@ -45,4 +46,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(users.router, prefix="/api")
     app.include_router(knowledge_bases.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
+    app.include_router(chat.router, prefix="/api")
     return app

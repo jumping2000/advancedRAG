@@ -59,6 +59,12 @@ services:
       GENERATION_MODEL: ${GENERATION_MODEL:-}
       GENERATION_API_KEY: ${GENERATION_API_KEY:-}
       GENERATION_TIMEOUT_SECONDS: ${GENERATION_TIMEOUT_SECONDS:-300}
+      # Retrieval and context of the chat: only the backend answers questions
+      RETRIEVAL_CANDIDATES: ${RETRIEVAL_CANDIDATES:-50}
+      RRF_K: ${RRF_K:-60}
+      CHAT_CONTEXT_CHUNKS: ${CHAT_CONTEXT_CHUNKS:-8}
+      CHAT_HISTORY_MESSAGES: ${CHAT_HISTORY_MESSAGES:-6}
+      CHAT_MAX_QUESTION_CHARS: ${CHAT_MAX_QUESTION_CHARS:-4000}
     volumes:
       - uploads:/data/uploads
     depends_on:
