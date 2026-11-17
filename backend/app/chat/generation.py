@@ -3,18 +3,26 @@
 `OpenAICompatibleClient.stream` posts `{base_url}/chat/completions` with `stream: true` and yields the text fragments
 (`choices[0].delta.content`) as the provider sends them; `check` asks `GET {base_url}/models` for the health check.
 
-Every failure is a `GenerationError` with a fixed message: never the prompt, the body received or the key. Rules for a
-stream that is not normal (each one is a `generation_error`, the text already yielded is the caller's to discard):
-- a status that is not 2xx, a connection that cannot be made or breaks, a body that is not an event stream (a 200 with a
-  JSON error body included), an event that is not valid JSON of the expected shape, an `error` object in an event, a
-  `finish_reason` of `error`, a line longer than `_MAX_LINE_BYTES`;
-- a stream that ends without `data: [DONE]` and without any `finish_reason` (truncated: the strictest safe reading).
-  A `finish_reason` followed by the end of the stream, with no `[DONE]`, is a normal end.
+Every failure is a `GenerationError` with a fixed message: never the prompt, the body received or the key. It holds no
+other exception, neither as `__cause__` nor as `__context__`: the repr of the original (an encoding error, a JSON error)
+can carry the key or the prompt. Rules for a stream that is not normal (each one is a `generation_error`, the text
+already yielded is the caller's to discard):
+- a status that is not 2xx (a redirect is never followed: the prompt and the key go to the configured URL only), a
+  connection that cannot be made or breaks, a body that is not an event stream (a 200 with a JSON error body
+  included), an event that is not valid JSON of the expected shape, an `error` object in an event, a line longer than
+  `_MAX_LINE_BYTES`, a key or a message that cannot be encoded (a non-ASCII key, a lone surrogate);
+- a `finish_reason` other than `stop` (`length`, `content_filter`, `error`, anything else): `stop` is the only normal
+  end, so a cut answer is never saved as a completed one (owner's decision, 2026-11-17);
+- a stream that ends, normally or not, without a single non-empty text fragment (owner's decision, 2026-11-17);
+- a stream that ends without `data: [DONE]` and without a `finish_reason` (truncated: the strictest safe reading).
+  A `finish_reason` of `stop` followed by the end of the stream, with no `[DONE]`, is a normal end.
 Events without text (empty `choices`, a `delta` with no `content`, no `choices` at all, comments, other SSE fields) are
 skipped. The lines are split on `\\n` in the bytes, before decoding: a multibyte character split between packets is
 whole by then, and the Unicode line separators (U+2028, U+0085...) that `aiter_lines` would split on can sit inside the
-text. The time limit covers the whole generation: connection, headers and every read, up to `timeout` seconds from the
-call (`generation_timeout`).
+text. The time limit covers the whole generation: connection, headers and every read, up to `timeout` seconds from
+the first iteration of `stream` (the body of an async generator starts then, not at the call). The deadline is also
+compared with the clock before every read, so it holds when the data is already buffered and no read has to wait
+(`generation_timeout`).
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ from contextlib import aclosing
 from typing import Any, Literal, NamedTuple, TypedDict
 
 import httpx
+from pydantic import SecretStr
 
 ErrorCode = Literal["generation_error", "generation_timeout"]
 
@@ -54,7 +63,7 @@ class GenerationError(Exception):
 
 class _Parsed(NamedTuple):
     text: str = ""
-    finished: bool = False  # the event has a finish_reason
+    finished: bool = False  # the event has the finish_reason `stop`
     done: bool = False  # the event is `[DONE]`
 
 
@@ -95,8 +104,8 @@ def _parse_line(raw: bytes) -> _Parsed:
         raise _invalid()
     choice: dict[str, Any] = choices[0]
     reason = choice.get("finish_reason")
-    if reason == "error":
-        raise _invalid()
+    if reason is not None and reason != "stop":
+        raise _invalid()  # length, content_filter, error, ...: the answer is cut or refused
     delta = choice.get("delta")
     content = None
     if delta is not None:
@@ -105,7 +114,7 @@ def _parse_line(raw: bytes) -> _Parsed:
         content = delta.get("content")
     if content is not None and not isinstance(content, str):
         raise _invalid()
-    return _Parsed(text=content or "", finished=reason is not None)
+    return _Parsed(text=content or "", finished=reason == "stop")
 
 
 async def _within[T](deadline: float, awaitable: Awaitable[T]) -> T:
@@ -118,15 +127,17 @@ class OpenAICompatibleClient:
     def __init__(self, base_url: str, model: str, api_key: str | None, timeout: float) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.api_key = api_key.strip() if api_key and api_key.strip() else None
+        # A SecretStr: the key does not show in the repr of the client or of its attributes
+        self._api_key = SecretStr(api_key.strip()) if api_key and api_key.strip() else None
         self.timeout = timeout
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        return {"Authorization": f"Bearer {self._api_key.get_secret_value()}"} if self._api_key else {}
 
     async def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
         """The text fragments of the answer, in order; `GenerationError` when it fails or does not end in time."""
         deadline = asyncio.get_running_loop().time() + self.timeout
+        failure: ErrorCode
         try:
             # No httpx timeout: the deadline above is the only one, so that it covers the whole generation. The
             # `yield` stays outside of every timeout block, so that the time the caller spends with a fragment does
@@ -147,18 +158,27 @@ class OpenAICompatibleClient:
                             yield text
                 finally:
                     await response.aclose()
-        except GenerationError:
-            raise
+        except GenerationError as error:
+            failure = error.code
         except TimeoutError:
-            raise GenerationError("generation_timeout") from None
-        except (httpx.HTTPError, httpx.InvalidURL, OSError):
-            raise _invalid() from None
+            failure = "generation_timeout"
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError, OSError, UnicodeError):
+            # UnicodeError: a key with a non-ASCII character (the header) or a lone surrogate in a message (the JSON)
+            failure = "generation_error"
+        else:
+            return
+        # Raised here, outside of the handlers above: no `__context__` links it to the original exception
+        raise GenerationError(failure)
 
     async def _fragments(self, response: httpx.Response, deadline: float) -> AsyncGenerator[str]:
         chunks = response.aiter_bytes().__aiter__()
+        loop = asyncio.get_running_loop()
         buffer = bytearray()
         finished = False
+        has_text = False
         while True:
+            if loop.time() >= deadline:  # `asyncio.timeout` fires only when a read suspends: a buffered one would not
+                raise TimeoutError
             chunk = await _within(deadline, anext(chunks, None))
             if chunk is not None:
                 buffer.extend(chunk)
@@ -175,14 +195,17 @@ class OpenAICompatibleClient:
             for line in lines:
                 parsed = _parse_line(line)
                 if parsed.text:
+                    has_text = True
                     yield parsed.text
                 finished = finished or parsed.finished
                 if parsed.done:
+                    if not has_text:
+                        raise _invalid()  # an empty answer is not an answer
                     return
             if chunk is None:
                 break
-        if not finished:
-            raise _invalid()  # closed without [DONE] and without a finish_reason: the answer may be cut
+        if not finished or not has_text:
+            raise _invalid()  # closed without [DONE] and without a finish_reason (the answer may be cut), or empty
 
     async def check(self, timeout: float) -> Literal["ok", "unreachable"]:  # noqa: ASYNC109 (the plan's interface)
         """`ok` if `GET {base_url}/models` answers 2xx within `timeout` seconds; `unreachable` otherwise."""
