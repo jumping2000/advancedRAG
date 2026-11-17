@@ -40,8 +40,12 @@ class KnowledgeBaseRepository:
         return query
 
     @staticmethod
-    def visible_kb_ids(user: User) -> Select[tuple[uuid.UUID]]:
-        raise NotImplementedError
+    def visible_kb_ids(user: User) -> Select[uuid.UUID]:
+        """The ids of the KBs the user can read, as a subquery to put in the same statement as the data read (the
+        retrieval of the chat does): every KB for the exact admin role, the assigned ones for any other role."""
+        if user.role == "admin":  # the same rule as _visible_to: fail closed, only the exact admin role reads every KB
+            return select(KnowledgeBase.id)
+        return select(KbMember.kb_id).where(KbMember.user_id == user.id)
 
     async def list_for(self, user: User) -> list[KnowledgeBase]:
         query = self._visible_to(user).order_by(func.lower(KnowledgeBase.name), KnowledgeBase.id)
