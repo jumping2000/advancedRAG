@@ -1,6 +1,6 @@
 # Area: fondazioni (stack, access, users, knowledge bases)
 
-- Last aligned: 2026-11-07
+- Last aligned: 2026-11-17
 - Linked specs: SPEC-2026-11-06-fase-1-fondazioni, SPEC-2026-11-07-fase-2-ingestion
 
 ## Current behaviour
@@ -121,7 +121,7 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 
 | Method and path | Who | Success | Errors |
 |---|---|---|---|
-| `GET /api/health` | anyone | 200 `{"status": "ok"\|"degraded", "checks": {"database", "redis", "ollama", "docling", "worker"}}`, each `ok` or `unreachable`; `worker` is `ok` when at least one `ingestion:worker:alive:*` key exists in Redis | 503 (same body) when database or Redis is `unreachable` |
+| `GET /api/health` | anyone | 200 `{"status": "ok"\|"degraded", "checks": {"database", "redis", "ollama", "docling", "worker", "generation"}}`, each `ok` or `unreachable`, except `generation`; `worker` is `ok` when at least one `ingestion:worker:alive:*` key exists in Redis; `generation` (phase 3) is `not_configured` when `GENERATION_BASE_URL` is empty (no request is sent), else `ok` if `GET {GENERATION_BASE_URL}/models` answers 2xx within `HEALTH_CHECK_TIMEOUT_SECONDS`, else `unreachable`; `status` is `ok` only if every check is `ok`, so a stack without a generation provider is `degraded` | 503 (same body) when database or Redis is `unreachable`; the other checks never change the code |
 | `POST /api/auth/login` `{"username", "password"}` | anyone | 200 `UserOut` + cookie | 401 `invalid_credentials` (wrong password, unknown or deactivated user) |
 | `POST /api/auth/logout` | session | 204 | 401 `not_authenticated` |
 | `GET /api/auth/me`, `PATCH /api/auth/me` `{"language": "it"\|"en"}` | session | 200 `UserOut` | 401, 422 |
@@ -168,6 +168,16 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   (10, 0 or more), `MIN_EXTRACTED_CHARS` (50, 0 or more), `FAILED_ORIGINAL_RETENTION_DAYS` (7, from 1 to 3650: how long the original of a FAILED
   document is kept after it failed) and `DOCLING_INCLUDE_IMAGES` (false: Docling is not asked to
   extract images; an interface switch for it is deferred to the settings page of phase 4).
+- Generation provider (phase 3, T-01; backend only, the worker does not get them): `GENERATION_BASE_URL` (empty: not
+  configured, the backend starts and health shows `not_configured`; otherwise the base of an OpenAI-compatible API, for
+  example `https://api.openai.com/v1` or `http://ollama:11434/v1`), `GENERATION_MODEL` (required when the base URL is
+  set: the backend does not start and the error names `GENERATION_MODEL`), `GENERATION_API_KEY` (a secret, empty in
+  `.env.example`; sent as `Authorization: Bearer` to the provider only when set, also by the health check) and
+  `GENERATION_TIMEOUT_SECONDS` (300, above 0: the whole of one generation). Blank values count as empty. The client
+  (`backend/app/chat/generation.py`) streams `POST {base}/chat/completions` and raises `GenerationError` with the code
+  `generation_error` (provider unreachable, status not 2xx, a body that is not an event stream, a malformed event, an
+  error object in the stream, or a stream that ends without `[DONE]` and without a `finish_reason`) or
+  `generation_timeout`; the messages are fixed text.
 - The retry route (phase 2, T-05) is the second POST without a JSON body: a POST with no `Content-Type` passes
   `require_json`, so the UI presses the button with a plain `fetch` POST. It checks the original with `UploadStorage`
   before it requeues (`DocumentRepository.requeue` changes FAILED to QUEUED in one statement, so two simultaneous
