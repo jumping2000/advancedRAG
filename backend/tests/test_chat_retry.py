@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -49,7 +50,7 @@ from tests.test_chat_ask import (
 from tests.test_chat_ask import chat as chat  # noqa: F401  (the fixture)
 from tests.test_chat_ask import engine as engine  # noqa: F401  (fresh database state per test)
 from tests.test_chat_ask import schema as schema  # noqa: F401
-from tests.test_chat_streaming import SECONDS, running, signed_in
+from tests.test_chat_streaming import SECONDS, eventually, running, signed_in
 from tests.test_logging_privacy import all_logs
 
 FAILED = ("assistant", "", "FAILED", "generation_error")
@@ -669,3 +670,59 @@ async def test_restart_answer_of_two_sessions_at_once_gives_the_answer_to_one_an
     assert sorted(outcomes) == ["in progress"] * 5 + ["restarted"]
     assert await pending_count(chat.engine) == 1
     assert await table_counts(chat.engine) == (1, 2, 0)
+
+
+async def test_AC_031_a_retry_that_meets_a_question_saving_its_pending_answer_gets_answer_in_progress(
+    chat: Chat,
+) -> None:
+    """The window that no check before the UPDATE can close: another request has written a question and its PENDING
+    answer and not committed yet. The retry cannot see them, its UPDATE waits for the unique index
+    `messages_one_pending`, and when the other request commits the retry is refused with `answer_in_progress` and
+    changes nothing (it does not fail with a database error)."""
+    conversation_id, failed = await failed_conversation(chat)
+    asked_at = (await messages_of(chat.engine, conversation_id))[-1]["created_at"]
+
+    async def retry_outcome() -> str:
+        async with chat.sessions()() as session:
+            repository = ConversationRepository(session)
+            conversation = await repository.get_for(await chat.user(session, "mario"), conversation_id)
+            assert conversation is not None
+            try:
+                await repository.restart_answer(conversation, failed)
+            except AnswerInProgress:
+                return "in progress"
+            except NotRetryable:
+                return "not retryable"
+            return "restarted"
+
+    async def retry_is_waiting() -> bool:
+        waiting = await fetch(
+            chat.engine,
+            "select 1 from pg_stat_activity where wait_event_type = 'Lock' and query ilike 'update messages%'",
+        )
+        return bool(waiting)
+
+    async with chat.engine.connect() as other:
+        transaction = await other.begin()
+        await other.execute(
+            text(
+                "insert into messages (conversation_id, role, content, status, created_at) values"
+                " (:c, 'user', 'nuova domanda', 'COMPLETED', :first), (:c, 'assistant', '', 'PENDING', :second)"
+            ),
+            {"c": conversation_id, "first": asked_at + timedelta(minutes=1), "second": asked_at + timedelta(minutes=2)},
+        )
+        retrying = asyncio.create_task(retry_outcome())
+        try:
+            assert await eventually(retry_is_waiting), "the retry did not wait for the other request"
+        finally:
+            await transaction.commit()
+        outcome = await asyncio.wait_for(retrying, SECONDS)
+
+    assert outcome == "in progress"
+    saved = await messages_of(chat.engine, conversation_id)
+    assert [(m["role"], m["status"], m["error_code"]) for m in saved] == [
+        ("user", "COMPLETED", None),
+        ("assistant", "FAILED", "generation_error"),  # the failed answer was not touched
+        ("user", "COMPLETED", None),
+        ("assistant", "PENDING", None),
+    ]
