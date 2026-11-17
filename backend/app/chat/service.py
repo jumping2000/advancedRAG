@@ -175,6 +175,12 @@ async def _abandon(events: AsyncGenerator[str], app: FastAPI, answer_id: uuid.UU
     await _shielded(settle())
 
 
+async def settle_interrupted(app: FastAPI, conversation: Conversation, answer: Message) -> None:
+    """Save the PENDING `answer` as FAILED `interrupted`, to the end even if the caller is cancelled: for a route that
+    fails after it made the answer PENDING and before the response exists (nothing else would ever settle it)."""
+    await _fail_to_the_end(app, answer.id, "interrupted", _ids(conversation, answer), time.monotonic())
+
+
 def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
     _background.add(task)
     task.add_done_callback(_background.discard)

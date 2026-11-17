@@ -1,4 +1,4 @@
-"""Conversations, messages and the sources of the answers (SPEC-2026-11-17-fase-3-chat, T-03 part).
+"""Conversations, messages and the sources of the answers (SPEC-2026-11-17-fase-3-chat, T-03 and T-04).
 
 A conversation belongs to one user and one KB. Every read of a conversation for a user goes through `get_for`, which is
 one SQL statement: the author and a KB the user can see (`KnowledgeBaseRepository.visible_kb_ids`), so a conversation of
@@ -7,9 +7,10 @@ has no such check: the caller must have checked the admin role.
 
 An answer is saved PENDING by `start_answer` (together with the question, in one transaction) and ends in
 `complete_answer` or `fail_answer`, which change it only while it is PENDING: the answer of a conversation that was
-deleted, or that ended already, is not touched. The partial unique index `messages_one_pending` refuses a second PENDING
-answer in a conversation, also between simultaneous requests (`AnswerInProgress`). Nothing here logs: questions, answers
-and titles never reach a log.
+deleted, or that ended already, is not touched. `restart_answer` (T-04) puts the last FAILED answer back to PENDING in
+place, for the retry; `mark_interrupted` ends the answers that the previous backend left PENDING. The partial unique
+index `messages_one_pending` refuses a second PENDING answer in a conversation, also between simultaneous requests
+(`AnswerInProgress`). Nothing here logs: questions, answers and titles never reach a log.
 """
 
 from __future__ import annotations
@@ -18,10 +19,11 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import DateTime, Text, and_, func, insert, literal, or_, select, tuple_, update
+from sqlalchemy import DateTime, Text, and_, exists, func, insert, literal, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.chat.retrieval import Candidate
 from app.db.models import Conversation, Message, MessageSource, User
@@ -243,13 +245,85 @@ class ConversationRepository:
         await self.session.commit()
         return changed
 
-    # Skeleton of T-04 (stubs: the tests of T-04 fail on their assertions until the next commits) ---------------------
-
     async def restart_answer(self, conversation: Conversation, message_id: uuid.UUID) -> Message:
-        raise NotRetryable
+        """Put the FAILED answer `message_id` back to PENDING, empty, in place: the same row, so the conversation keeps
+        one question and one answer in the same order (`created_at` is not touched), and the activity of the
+        conversation is marked. It must be the last message of the conversation: that is checked, with its status and
+        its role, in the UPDATE itself, so nothing can come between the check and the change. `MessageNotFound` if the
+        conversation has no such message, `AnswerInProgress` if it has a PENDING answer (checked before `NotRetryable`:
+        while an answer is in progress, any retry is refused for that reason; also when a simultaneous request got the
+        unique index `messages_one_pending` first), `NotRetryable` otherwise (a question, a COMPLETED answer, a failed
+        answer that a later message follows). Nothing is written when it raises."""
+        conversation_id = conversation.id
+        later = aliased(Message)
+        is_last = ~exists().where(
+            later.conversation_id == Message.conversation_id,
+            tuple_(later.created_at, later.id) > tuple_(Message.created_at, Message.id),
+        )
+        try:
+            restarted: Message | None = await self.session.scalar(
+                update(Message)
+                .where(
+                    Message.id == message_id,
+                    Message.conversation_id == conversation_id,
+                    Message.role == "assistant",
+                    Message.status == "FAILED",
+                    is_last,
+                )
+                .values(content="", status="PENDING", error_code=None, notice=None)
+                .returning(Message)
+                .execution_options(populate_existing=True)
+            )
+            if restarted is not None:
+                await self.session.execute(
+                    update(Conversation).where(Conversation.id == conversation_id).values(updated_at=func.now())
+                )
+        except IntegrityError as error:
+            await self.session.rollback()
+            if _sqlstate(error) == UNIQUE_VIOLATION:  # a question or a retry got to be the PENDING answer first
+                raise AnswerInProgress from None
+            raise
+        if restarted is not None:
+            await self.session.commit()
+            return restarted
+        known = await self.session.scalar(
+            select(Message.id).where(Message.id == message_id, Message.conversation_id == conversation_id)
+        )
+        pending = await self.session.scalar(
+            select(Message.id).where(Message.conversation_id == conversation_id, Message.status == "PENDING").limit(1)
+        )
+        await (
+            self.session.commit()
+        )  # nothing was written: it only ends the transaction (a rollback would expire objects)
+        if known is None:
+            raise MessageNotFound
+        raise AnswerInProgress if pending is not None else NotRetryable
 
     async def question_of(self, answer: Message) -> Message | None:
-        return None
+        """The question that `answer` answers: the last question before it in the conversation."""
+        question: Message | None = await self.session.scalar(
+            select(Message)
+            .where(
+                Message.conversation_id == answer.conversation_id,
+                Message.role == "user",
+                tuple_(Message.created_at, Message.id) < tuple_(answer.created_at, answer.id),
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(1)
+        )
+        return question
 
     async def mark_interrupted(self) -> int:
-        return 0
+        """End every PENDING answer as FAILED `interrupted`, without text, and return how many: the answers that the
+        backend that generated them did not live to settle (REQ-017). Called once, at the start of the backend, before
+        it serves a request: a single process generates the answers (ADR-003), so at that moment no PENDING answer
+        has anyone working on it."""
+        result = await self.session.execute(
+            update(Message)
+            .where(Message.status == "PENDING")
+            .values(content="", status="FAILED", error_code="interrupted", notice=None)
+            .returning(Message.id)
+        )
+        count = len(result.all())
+        await self.session.commit()
+        return count
