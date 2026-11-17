@@ -16,7 +16,7 @@ from app.worker import HEARTBEAT_PREFIX
 
 router = APIRouter()
 
-CheckState = Literal["ok", "unreachable"]
+CheckState = Literal["ok", "unreachable", "not_configured"]
 
 
 async def _database(engine: AsyncEngine) -> None:
@@ -64,7 +64,15 @@ async def health(request: Request) -> JSONResponse:
         _state(_http(f"{settings.docling_base_url.rstrip('/')}/health", timeout), timeout),
         _state(_worker(request.app.state.redis), timeout),
     )
-    checks = {"database": database, "redis": redis, "ollama": ollama, "docling": docling, "worker": worker}
+    generation: CheckState = "not_configured" if not settings.generation_base_url else "unreachable"  # skeleton
+    checks = {
+        "database": database,
+        "redis": redis,
+        "ollama": ollama,
+        "docling": docling,
+        "worker": worker,
+        "generation": generation,
+    }
     status = "ok" if all(state == "ok" for state in checks.values()) else "degraded"
     code = 200 if database == "ok" and redis == "ok" else 503
     return JSONResponse({"status": status, "checks": checks}, status_code=code)

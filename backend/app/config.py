@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # The original of a FAILED document is kept this many days after it failed, for a retry (REQ-017); only the worker
     # reads it. At most ten years: a larger value would overflow a date.
     failed_original_retention_days: int = Field(default=7, ge=1, le=3650)
+    # The generation provider of the chat (phase 3, REQ-001): any OpenAI-compatible API. An empty base URL means not
+    # configured (the backend starts, no request goes to a provider); with a base URL, the model is required.
+    # The key is sent as "Authorization: Bearer" when set; one generation lasts at most this many seconds.
+    generation_base_url: str = ""
+    generation_model: str = ""
+    generation_api_key: SecretStr | None = None
+    generation_timeout_seconds: float = Field(default=300, gt=0)
     chunk_target_words: int = 300
     chunk_min_words: int = 50
     chunk_max_words: int = 450
