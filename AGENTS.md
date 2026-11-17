@@ -34,12 +34,13 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 - A signed-in page shows its load errors without `role="alert"`: the header language selector owns the alert.
 - Polling tests in Vitest call `vi.useFakeTimers({ shouldAdvanceTime: true })` before rendering.
 - Multipart `fetch` calls set no `Content-Type` (the browser adds the boundary): `FormData` plus `X-Requested-With`.
+- SSE responses send `X-Accel-Buffering: no` and a keepalive comment at least every 15 s (Nginx reads with a 60 s timeout).
 - Host ports in use by the e2e tests: 18080, 18180, 18181, 18280, 18380, 18480, 18543, 18544, 18580; next free: 18680.
 
 ## Rules
 - Do not modify: applied database migrations already merged into `main` (`backend/migrations/versions/`): add a new one
-- Sensitive areas: `backend/app/auth/`, `backend/app/documents/` (upload validation, file storage), `backend/migrations/`,
-  `compose.yaml`, `nginx/`, `.github/workflows/`
+- Sensitive areas: `backend/app/auth/`, `backend/app/documents/` (upload validation, file storage), `backend/app/chat/`
+  (isolation of conversations and sources), `backend/migrations/`, `compose.yaml`, `nginx/`, `.github/workflows/`
 - Dependencies: only those of `docs/adr/ADR-001-toolchain-fase-1.md` and `docs/adr/ADR-002-ingestion.md`; any other is
   asked first.
 - Every behaviour change requires a test, written from the acceptance criteria before the code.
@@ -54,7 +55,8 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
   content, file names or vectors.
 - Vectors of different indexing profiles never mix: every vector search filters on `profile_id` and uses the profile's HNSW
   expression `embedding::vector(N)`.
-- Automated tests never call the real Ollama, Docling or OpenAI: they use fakes; real services only in opt-in live tests.
+- Automated tests never call the real Ollama, Docling or generation provider (OpenAI-compatible): they use fakes; real
+  services only in opt-in live tests.
 
 ## Decision rights
 A decision no line names counts as "Asks first". The "Never" list only grows: the plugin's rules apply even if a line is
