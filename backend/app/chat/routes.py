@@ -94,10 +94,15 @@ async def stream_answer(
         raise answer_in_progress() from None
     except ConversationGone:
         raise conversation_not_found() from None
-    await session.close()  # the request holds no connection while the answer is generated
-    return service.AnswerResponse(
+    response = service.AnswerResponse(
         request, user, conversation, user_message, answer, media_type="text/event-stream", headers=STREAM_HEADERS
     )
+    try:
+        await session.close()  # the request holds no connection while the answer is generated
+    except BaseException:
+        await response.abandon()  # the answer is PENDING and no response will ever settle it
+        raise
+    return response
 
 
 @router.post("/kbs/{kb_id}/conversations")
