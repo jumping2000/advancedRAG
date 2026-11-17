@@ -4,6 +4,10 @@
 The worker writes the Redis key `ingestion:worker:alive:{hostname}` (value "1", expiry 30 seconds) every 10 seconds; the
 health check looks for any key with that prefix. These tests use the Redis of compose.test.yaml, which starts with no
 heartbeat key before and after each test. The tests of phase 1 that this spec revises are in `test_health.py`.
+
+Revised for phase 3 (its REQ-002): `checks` also has `generation`. The two tests that assert the whole body or the
+overall status configure a fake generation provider (`generation: "ok"`), so that, as before, the worker alone decides
+whether the status is `ok` or `degraded`.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from app.config import Settings
 from app.worker import HEARTBEAT_PREFIX, beat, healthcheck, heartbeat_key, start_heartbeat
 from tests.conftest import TEST_DATABASE_URL, TEST_REDIS_URL, make_settings
 from tests.fakes.http_server import closed_port_url, fake_service
+from tests.fakes.services import fake_generation_provider
 
 HEARTBEAT_PATTERN = "ingestion:worker:alive:*"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -46,16 +51,29 @@ def redis_connection() -> Iterator[SyncRedis]:
 async def test_AC_002_no_worker_gives_200_degraded_and_worker_unreachable(
     client_for: Callable[[Settings], httpx.AsyncClient],
 ) -> None:
-    """Database and Redis are up, Ollama and Docling answer, and no worker has written its heartbeat."""
-    with fake_service() as ollama, fake_service() as docling:
-        settings = make_settings(ollama_base_url=ollama, docling_base_url=docling)
+    """Database and Redis are up, Ollama, Docling and the generation provider answer, and no worker has written its
+    heartbeat: the missing worker alone makes the status degraded."""
+    with fake_service() as ollama, fake_service() as docling, fake_generation_provider() as provider:
+        settings = make_settings(
+            ollama_base_url=ollama,
+            docling_base_url=docling,
+            generation_base_url=provider.url,
+            generation_model="fake-model",
+        )
         async with client_for(settings) as client:
             response = await client.get("/api/health")
 
     assert response.status_code == 200
     assert response.json() == {
         "status": "degraded",
-        "checks": {"database": "ok", "redis": "ok", "ollama": "ok", "docling": "ok", "worker": "unreachable"},
+        "checks": {
+            "database": "ok",
+            "redis": "ok",
+            "ollama": "ok",
+            "docling": "ok",
+            "worker": "unreachable",
+            "generation": "ok",
+        },
     }
 
 
@@ -64,8 +82,13 @@ async def test_AC_001_a_heartbeat_key_makes_the_worker_ok_and_the_status_ok(
 ) -> None:
     """The check looks for any key with the prefix: the host name in it is not the backend's."""
     redis_connection.set(f"{HEARTBEAT_PREFIX}some-other-container", "1", ex=30)
-    with fake_service() as ollama, fake_service() as docling:
-        settings = make_settings(ollama_base_url=ollama, docling_base_url=docling)
+    with fake_service() as ollama, fake_service() as docling, fake_generation_provider() as provider:
+        settings = make_settings(
+            ollama_base_url=ollama,
+            docling_base_url=docling,
+            generation_base_url=provider.url,
+            generation_model="fake-model",
+        )
         async with client_for(settings) as client:
             response = await client.get("/api/health")
 

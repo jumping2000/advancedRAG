@@ -198,7 +198,14 @@ def test_AC_001_health_shows_the_worker_ok(stack: Path) -> None:
     assert response.json()["checks"]["worker"] == "ok"
     assert response.json() == {
         "status": "ok",
-        "checks": {"database": "ok", "redis": "ok", "ollama": "ok", "docling": "ok", "worker": "ok"},
+        "checks": {
+            "database": "ok",
+            "redis": "ok",
+            "ollama": "ok",
+            "docling": "ok",
+            "worker": "ok",
+            "generation": "ok",  # phase 3: compose.fakes.yaml points GENERATION_BASE_URL at the fake's /v1/models
+        },
     }
 
 
