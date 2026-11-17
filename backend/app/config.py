@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     generation_model: str = ""
     generation_api_key: SecretStr | None = None
     generation_timeout_seconds: float = Field(default=300, gt=0)
+    # Retrieval and context of the chat (phase 3): each search returns at most `retrieval_candidates` chunks, the lists
+    # are fused with Reciprocal Rank Fusion (`rrf_k`), the model gets the first `chat_context_chunks` chunks and the
+    # last `chat_history_messages` completed messages; a question longer than `chat_max_question_chars` (after the
+    # spaces at both ends are removed) is refused. Only the backend reads them.
+    retrieval_candidates: int = Field(default=50, ge=1)
+    rrf_k: int = Field(default=60, ge=1)
+    chat_context_chunks: int = Field(default=8, ge=1)
+    chat_history_messages: int = Field(default=6, ge=0)
+    chat_max_question_chars: int = Field(default=4000, ge=1)
     chunk_target_words: int = 300
     chunk_min_words: int = 50
     chunk_max_words: int = 450
