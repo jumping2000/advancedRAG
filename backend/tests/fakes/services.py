@@ -109,6 +109,8 @@ class _OllamaHandler(_Quiet):
     def do_GET(self) -> None:  # noqa: N802 (http.server API)
         if self.path == "/api/version":
             _json(self, 200, {"version": "0.0.0-fake"})
+        elif self.path == "/v1/models":  # the OpenAI-compatible API that a real Ollama also serves (generation check)
+            _json(self, 200, {"object": "list", "data": [{"id": "fake-model", "object": "model"}]})
         else:
             _json(self, 404, {"error": "not found"})
 

@@ -2,6 +2,8 @@
 #   docker compose -f compose.yaml -f backend/tests/e2e/compose.fakes.yaml ...
 # It adds the service `fakes` (the fake Ollama on 11434 and the fake Docling on 5001 of backend/tests/fakes/services.py,
 # published on no host port) and points backend and worker at it. The paths are relative to compose.yaml.
+# Phase 3: the backend also gets a generation provider, the fake Ollama's `/v1/models`, so that the `generation` check
+# of GET /api/health is `ok` (no completion is ever requested by these tests).
 services:
   fakes:
     image: python:3.12.16-slim
@@ -22,6 +24,8 @@ services:
     environment:
       OLLAMA_BASE_URL: http://fakes:11434
       DOCLING_BASE_URL: http://fakes:5001
+      GENERATION_BASE_URL: http://fakes:11434/v1
+      GENERATION_MODEL: fake-model
     depends_on:
       fakes:
         condition: service_healthy
