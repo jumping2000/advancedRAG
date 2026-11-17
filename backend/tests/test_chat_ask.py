@@ -1,7 +1,8 @@
 # SPEC-2026-11-17-fase-3-chat
-"""A question gets a saved, cited answer: AC-001, AC-011, AC-012, AC-013, AC-014, AC-017, AC-018, AC-021, AC-023, AC-047
-(REQ-001, REQ-005 to REQ-009, REQ-011, REQ-014, REQ-103), through the API against the real PostgreSQL (ParadeDB) of
-compose.test.yaml, the fake Ollama and the fake generation provider (real local sockets, never a real service).
+"""A question gets a saved, cited answer: AC-001, AC-011, AC-012, AC-013, AC-014, AC-017, AC-018, AC-021, AC-023,
+AC-047, AC-048 (REQ-001, REQ-005 to REQ-009, REQ-011, REQ-014, REQ-015, REQ-103), through the API against the real
+PostgreSQL (ParadeDB) of compose.test.yaml, the fake Ollama and the fake generation provider (real local sockets, never
+a real service).
 
 The app runs in the test's event loop (`httpx.ASGITransport`), which returns the whole stream: the tests here read the
 events of a finished answer. What needs a real socket (the order in time of the events, the keepalive, a request that
@@ -1636,7 +1637,7 @@ def _raising(error: Exception) -> Any:
 
 
 @pytest.mark.parametrize("where", ["profile", "database", "prompt", "saving"])
-async def test_an_unexpected_failure_is_internal_error_and_is_neither_the_provider_nor_ollama(
+async def test_AC_048_an_unexpected_failure_is_internal_error_and_is_neither_the_provider_nor_ollama(
     chat: Chat, monkeypatch: pytest.MonkeyPatch, where: str
 ) -> None:
     await seed(chat, [chunk_row(0)])
@@ -1670,6 +1671,14 @@ async def test_an_unexpected_failure_is_internal_error_and_is_neither_the_provid
     assert (answer["status"], answer["error_code"], answer["content"]) == ("FAILED", "internal_error", "")
     assert await pending_count(chat.engine) == 0
     assert secret not in "\n".join(line for _, line in logs.lines)
+    # the question is saved, and a new question in the same conversation is not refused with 409
+    (asked, _) = await fetch(chat.engine, "select * from messages order by created_at, id")
+    assert (asked["role"], asked["status"], asked["content"]) == ("user", "COMPLETED", QUESTION)
+    monkeypatch.undo()
+    async with chat.api("mario") as api:
+        again = await ask(api, events[0][1]["conversation_id"], "quokka di nuovo")
+    assert again.status_code == 200, again.text
+    assert names_of(events_of(again))[-1] == "done"
 
 
 async def test_the_failures_of_ollama_and_of_the_provider_keep_their_own_codes(chat: Chat) -> None:
