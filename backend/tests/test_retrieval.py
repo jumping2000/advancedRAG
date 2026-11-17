@@ -9,6 +9,7 @@ a user who is not assigned to the KB gets nothing from `dense_search`, `bm25_sea
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
@@ -773,3 +774,194 @@ async def test_a_full_retrieval_round_through_the_five_functions(world: World) -
     assert [r.chunk_id for r in ranked] == [far, middle, near]  # 1/63 + 1/61 > 1/62 + 1/62 > 1/61
     assert [c.chunk_id for c in candidates] == [far, middle, near]
     assert [(c.dense_rank, c.bm25_rank) for c in candidates] == [(3, 1), (2, 2), (1, None)]
+
+
+# Hardening asked by the owner after the independent review (T-02, 2026-11-17) ----------------------------------------
+
+
+class Calls(Statements):
+    """`Statements` that also keeps the parameters of each statement."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        super().__init__(engine)
+        self.calls: list[tuple[str, Any]] = []
+
+    def record(self, conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, many: bool) -> None:
+        super().record(conn, cursor, statement, parameters, context, many)
+        self.calls.append((statement, parameters))
+
+
+def plan_nodes(node: dict[str, Any]) -> list[dict[str, Any]]:
+    return [node] + [found for child in node.get("Plans", []) for found in plan_nodes(child)]
+
+
+async def explain(session: AsyncSession, statement: str, parameters: Any) -> list[dict[str, Any]]:
+    """The nodes of the executed plan of a statement the search sent, run in the transaction of the search."""
+    connection = await session.connection()
+    result = await connection.exec_driver_sql("EXPLAIN (ANALYZE, FORMAT JSON) " + statement, parameters)
+    document = result.scalar_one()
+    plan = json.loads(document) if isinstance(document, str) else document
+    return plan_nodes(plan[0]["Plan"])
+
+
+async def test_AC_008_the_filtered_vector_search_scans_the_hnsw_index_of_the_profile_and_needs_the_iterative_scan(
+    world: World,
+) -> None:
+    """Same rows as the test above, with the proof that the scan is the profile's HNSW index: the executed plan holds an
+    index scan on `chunks_embedding_hnsw_*` of the active profile and no scan of `chunks` (a plan that did not match the
+    partial index would show a sequential scan, `force_hnsw_scan` only penalises it). With `hnsw.iterative_scan` off the
+    same statement finds nothing of the KB asked, so the iterative scan is what the result depends on."""
+    mine = await add_chunks(
+        world.engine,
+        world.kb_a,
+        await add_document(world.engine, world.kb_a),
+        world.profile,
+        *(Row(f"lontano {i}", close_to_question(0.3 + 0.01 * i)) for i in range(60)),
+    )
+    await add_chunks(
+        world.engine,
+        world.kb_b,
+        await add_document(world.engine, world.kb_b),
+        world.profile,
+        *(Row(f"altra kb {i}", close_to_question(0.002 * i)) for i in range(60)),
+    )
+    await add_chunks(
+        world.engine,
+        world.kb_a,
+        await add_document(world.engine, world.kb_a, "PROCESSING"),
+        world.profile,
+        *(Row(f"in corso {i}", close_to_question(0.12 + 0.002 * i)) for i in range(60)),
+    )
+
+    async with world.sessions()() as session:
+        await force_hnsw_scan(session)
+        anna = await world.user(session, "anna")
+        with Calls(world.engine) as statements:
+            found = await dense_search(session, anna, world.kb_a, world.profile, QUESTION_VECTOR, 50)
+        statement, parameters = statements.calls[-1]
+        assert "chunks" in statement
+        nodes = await explain(session, statement, parameters)
+        assert await session.scalar(text("select current_setting('hnsw.iterative_scan')")) == "relaxed_order"
+        await session.execute(text("select set_config('hnsw.iterative_scan', 'off', true)"))
+        connection = await session.connection()
+        without_iterative_scan = (await connection.exec_driver_sql(statement, parameters)).all()
+
+    assert found == mine[:50]
+    reads_of_chunks = [node for node in nodes if node.get("Relation Name") == "chunks"]
+    index = f"chunks_embedding_hnsw_{world.profile.id.hex[:12]}"  # the name the indexing gives the profile's index
+    assert [(node["Node Type"], node.get("Index Name")) for node in reads_of_chunks] == [("Index Scan", index)], nodes
+    assert len(without_iterative_scan) < 50
+
+
+@pytest.mark.parametrize(
+    ("limit", "ef_search"),
+    [(1, 40), (39, 40), (40, 40), (41, 41), (150, 150), (999, 999), (1000, 1000), (1001, 1000), (5000, 1000)],
+)
+async def test_AC_008_ef_search_follows_the_limit_between_40_and_1000(world: World, limit: int, ef_search: int) -> None:
+    """`hnsw.ef_search` is `clamp(limit, 40, 1000)`, the iterative scan is `relaxed_order` and the scan visits at most
+    200000 rows, all set for the transaction of the search."""
+    await add_chunk(world.engine, world.kb_a, world.profile, Row(TEXT))
+    async with world.sessions()() as session:
+        mario = await world.user(session, "mario")
+        await dense_search(session, mario, world.kb_a, world.profile, QUESTION_VECTOR, limit)
+        settings = (
+            await session.execute(
+                text(
+                    "select current_setting('hnsw.ef_search'), current_setting('hnsw.max_scan_tuples'),"
+                    " current_setting('hnsw.iterative_scan')"
+                )
+            )
+        ).one()
+
+    assert tuple(settings) == (str(ef_search), "200000", "relaxed_order")
+
+
+async def test_AC_008_the_hnsw_settings_are_local_to_the_transaction_of_the_search(world: World) -> None:
+    """They are `set_config(..., is_local => true)`: the connection that ran the search has the values it had before
+    as soon as the transaction is committed, so no other request that reuses it inherits them. The engine has one
+    connection, so the check after the commit runs on the backend that ran the search."""
+    await add_chunk(world.engine, world.kb_a, world.profile, Row(TEXT))
+    names = ("hnsw.ef_search", "hnsw.max_scan_tuples", "hnsw.iterative_scan")
+    query = text("select " + ", ".join(f"current_setting('{name}')" for name in names) + ", pg_backend_pid()")
+    single = create_async_engine(make_settings().sqlalchemy_url, pool_size=1, max_overflow=0)
+    try:
+        async with async_sessionmaker(single, expire_on_commit=False)() as session:
+            await session.execute(text("select '[1]'::vector"))  # loads pgvector, which defines its settings
+            before = (await session.execute(query)).one()
+            mario = await world.user(session, "mario")
+            await dense_search(session, mario, world.kb_a, world.profile, QUESTION_VECTOR, 500)
+            during = (await session.execute(query)).one()
+            await session.commit()
+            after = (await session.execute(query)).one()
+    finally:
+        await single.dispose()
+
+    assert during[:3] == ("500", "200000", "relaxed_order")
+    assert before[:3] != during[:3]
+    assert after == before  # same backend, the values it had before the search
+
+
+# BM25: the READY and profile filters are applied before the limit --------------------------------------------------
+
+
+async def test_AC_010_the_limit_counts_only_ready_chunks_of_the_profile_that_outscore_nothing_filtered_out(
+    world: World,
+) -> None:
+    """Six chunks of documents that are not READY and six of another profile score higher than the three READY ones:
+    `limit=3` returns the three READY ones, best first, not fewer because the top three of the index were filtered."""
+    ready = [Row("garanzia " + " ".join(f"parola{i}" for i in range(count))) for count in (4, 12, 30)]
+    ready_ids = await add_chunks(
+        world.engine, world.kb_a, await add_document(world.engine, world.kb_a), world.profile, *ready
+    )
+    in_progress = await add_chunks(
+        world.engine,
+        world.kb_a,
+        await add_document(world.engine, world.kb_a, "PROCESSING"),
+        world.profile,
+        *(Row("garanzia garanzia garanzia " + "parola " * i) for i in range(6)),
+    )
+    other_profile = await add_chunks(
+        world.engine,
+        world.kb_a,
+        await add_document(world.engine, world.kb_a),
+        world.other,
+        *(Row("garanzia garanzia garanzia garanzia " + "parola " * i) for i in range(6)),
+    )
+    async with world.engine.connect() as connection:
+        raw = await connection.scalars(
+            text("select id from chunks where content ||| 'garanzia' order by pdb.score(id) desc, id limit 12")
+        )
+        assert set(raw.all()) == set(in_progress) | set(other_profile)  # the filtered rows really are the top 12
+
+    assert await bm25(world, "mario", world.kb_a, "garanzia", limit=3) == ready_ids
+    assert await bm25(world, "mario", world.kb_a, "garanzia", limit=2) == ready_ids[:2]
+    assert await bm25(world, "mario", world.kb_a, "garanzia", limit=1) == ready_ids[:1]
+    assert await bm25(world, "mario", world.kb_a, "garanzia", limit=50) == ready_ids
+
+
+async def test_AC_010_a_tie_at_the_limit_is_cut_by_chunk_id_among_the_chunks_that_pass_the_filters(
+    world: World,
+) -> None:
+    """Eight READY chunks tie with each other and with chunks that do not pass the filters (those with the smallest
+    ids): every limit, repeated, returns the first ids of the READY ones."""
+    ready = [Row("sconto", id=uuid.UUID(int=1000 + number)) for number in (5, 3, 8, 1, 7, 2, 6, 4)]
+    await add_chunks(world.engine, world.kb_a, await add_document(world.engine, world.kb_a), world.profile, *ready)
+    await add_chunks(
+        world.engine,
+        world.kb_a,
+        await add_document(world.engine, world.kb_a, "FAILED"),
+        world.profile,
+        *(Row("sconto", id=uuid.UUID(int=number)) for number in range(1, 5)),
+    )
+    await add_chunks(
+        world.engine,
+        world.kb_a,
+        await add_document(world.engine, world.kb_a),
+        world.other,
+        *(Row("sconto", id=uuid.UUID(int=10 + number)) for number in range(1, 5)),
+    )
+    expected = sorted(row.id for row in ready)
+
+    for limit in (1, 3, 5, 7, 8, 9):
+        for _ in range(3):
+            assert await bm25(world, "mario", world.kb_a, "sconto", limit=limit) == expected[:limit]
