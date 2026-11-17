@@ -108,8 +108,9 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
   vettoriale.
 - REQ-006 (functional): Il contesto passato al modello contiene, numerati da 1 nell'ordine RRF, i primi
   `CHAT_CONTEXT_CHUNKS` chunk (default 8), ciascuno con titolo del documento, sezione e pagine quando note, e gli ultimi
-  `CHAT_HISTORY_MESSAGES` messaggi completati della conversazione (default 6, risposte fallite escluse) prima della
-  domanda; le istruzioni chiedono di rispondere solo in base alle fonti, nella lingua della domanda, di citare le fonti
+  `CHAT_HISTORY_MESSAGES` messaggi non vuoti degli scambi completati della conversazione (default 6) prima della
+  domanda; uno scambio la cui risposta è fallita è escluso per intero, la risposta e la domanda a cui rispondeva, così
+  i ruoli inviati al provider si alternano; le istruzioni chiedono di rispondere solo in base alle fonti, nella lingua della domanda, di citare le fonti
   con [n] e di dire esplicitamente quando le fonti non contengono la risposta.
 - REQ-007 (functional): Se la KB non ha nessun chunk ricercabile (nessun documento READY nel profilo attivo), la domanda
   riceve una risposta fissa salvata nella conversazione con il codice `no_documents` e senza fonti, che la UI mostra
@@ -127,7 +128,7 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
   documento salvato con la risposta e «Fonte non più disponibile»; il contenuto dei chunk non viene copiato nelle
   conversazioni.
 - REQ-011 (functional): Una conversazione appartiene a un solo utente e a una sola KB; si crea con la prima domanda e il
-  suo titolo sono i primi 80 caratteri della domanda (spazi iniziali e finali tolti); l'autore la rinomina con un titolo
+  suo titolo sono i primi 80 caratteri della domanda (spazi iniziali e finali tolti, anche quelli finali lasciati dal taglio); l'autore la rinomina con un titolo
   di 1–200 caratteri dopo aver tolto gli spazi iniziali e finali (altrimenti 422 `validation_error`); una domanda vuota
   dopo aver tolto gli spazi o più lunga di `CHAT_MAX_QUESTION_CHARS` (default 4000) riceve 422 `validation_error` e non
   viene salvata.
@@ -143,8 +144,9 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
   mentre una risposta è in corso ricevono 409 `answer_in_progress`.
 - REQ-015 (functional): Se il calcolo del vettore della domanda fallisce (`embedding_error`), se il provider è
   irraggiungibile, risponde con un errore o interrompe lo streaming (`generation_error`), se scade il tempo
-  (`generation_timeout`), o se la connessione del client si chiude prima della fine o il backend riparte durante la
-  generazione (`interrupted`), la domanda resta salvata, la risposta è salvata come fallita con quel codice e senza testo
+  (`generation_timeout`), se un guasto interno imprevisto (database, profilo di indicizzazione, errore non previsto)
+  interrompe la risposta (`internal_error`), o se la connessione del client si chiude prima della fine o il backend
+  riparte durante la generazione (`interrupted`), la domanda resta salvata, la risposta è salvata come fallita con quel codice e senza testo
   (il testo parziale viene scartato) e la generazione si ferma.
 - REQ-016 (functional): «Riprova» è disponibile solo sull'ultima risposta della conversazione quando è fallita; ripete
   retrieval e generazione per la stessa domanda e sostituisce la risposta fallita; una risposta fallita seguita da una
@@ -201,7 +203,8 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
   contesto della sola ricerca vettoriale.
 - AC-012 [REQ-006]: Given una conversazione con 4 scambi completati e uno fallito e una KB con 12 chunk pertinenti,
   when si fa una nuova domanda, then la richiesta al provider finto contiene 8 chunk numerati da 1 nell'ordine RRF con
-  documento, sezione e pagine, gli ultimi 6 messaggi completati senza la risposta fallita, e la domanda.
+  documento, sezione e pagine, gli ultimi 6 messaggi degli scambi completati senza lo scambio fallito (né la sua risposta
+  né la sua domanda), con i ruoli che si alternano, e la domanda.
 - AC-013 [REQ-006]: Given la richiesta inviata al provider finto, when la si legge, then le istruzioni chiedono di
   rispondere solo dalle fonti, nella lingua della domanda, di citare con [n] e di dire quando le fonti non bastano.
 - AC-014 [REQ-007]: Given una KB senza documenti READY, when si fa una domanda, then la risposta è salvata con il codice
@@ -252,6 +255,10 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
   uno che chiude lo stream a metà, when si fa una domanda in ciascun caso, then la domanda è salvata, la risposta è
   fallita rispettivamente con `embedding_error`, `generation_error`, `generation_error`, `generation_error`, senza testo,
   e il client riceve l'evento di errore con quel codice.
+- AC-048 [REQ-015]: Given un guasto interno imprevisto durante una risposta (per esempio un errore del database dopo il
+  salvataggio della domanda), when si fa una domanda, then la domanda è salvata, la risposta è fallita con
+  `internal_error` senza testo, il client riceve l'evento di errore con quel codice e una nuova domanda nella stessa
+  conversazione non riceve 409.
 - AC-033 [REQ-015]: Given un provider finto lento, when il client chiude la connessione dopo il primo frammento, then la
   risposta salvata è fallita `interrupted` senza testo e il provider finto vede chiudere la sua richiesta.
 - AC-034 [REQ-016]: Given l'ultima risposta fallita, when l'autore preme «Riprova», then retrieval e generazione
@@ -323,4 +330,4 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
 - Dataset e metriche per valutare retrieval, fusione RRF e qualità delle risposte in italiano e inglese (fase 4) — blocking: no
 
 ## Revisions
-- none
+- 2026-11-17: durante T-03 il reviewer e l'owner hanno deciso due punti che la spec lasciava aperti. REQ-006/AC-012: la cronologia inviata al provider esclude l'intero scambio fallito, domanda compresa, per avere ruoli alternati con tutti i provider (prima: solo la risposta fallita). REQ-015 e nuovo AC-048: un guasto interno imprevisto è riportato con il codice `internal_error` e non con `generation_error`. REQ-011: il titolo non ha spazi finali dopo il taglio a 80 caratteri. Il piano segue: AC-048 è coperto da T-03.
