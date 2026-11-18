@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
+def configure_logging(level: str) -> None:  # skeleton of the owner's request (T-04): the tests fail on their assertions
+    return None
+
+
 def migrate(database_url: URL) -> None:
     config = Config(str(BACKEND_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
