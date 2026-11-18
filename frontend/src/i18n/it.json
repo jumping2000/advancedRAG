@@ -148,6 +148,50 @@
       "internal_error": "Errore interno del server. Riprova."
     }
   },
+  "chat": {
+    "conversations": "Conversazioni",
+    "new": "Nuova conversazione",
+    "noConversations": "Nessuna conversazione.",
+    "loading": "Caricamento…",
+    "empty": "Fai una domanda su questa knowledge base.",
+    "rename": "Rinomina",
+    "renameLabel": "Nuovo titolo",
+    "save": "Salva",
+    "cancel": "Annulla",
+    "delete": "Elimina",
+    "confirm": "Conferma",
+    "confirmDelete": "Eliminare la conversazione «{{title}}»? Anche i suoi messaggi saranno cancellati.",
+    "question": "Domanda",
+    "send": "Invia",
+    "generating": "Risposta in corso…",
+    "you": "Tu",
+    "assistant": "Assistente",
+    "messages": "Messaggi",
+    "sources": "Fonti",
+    "showExcerpt": "Mostra estratto",
+    "hideExcerpt": "Nascondi estratto",
+    "sourceUnavailable": "Fonte non più disponibile",
+    "page": "p. {{start}}",
+    "pages": "pp. {{start}}–{{end}}",
+    "retry": "Riprova",
+    "failures": {
+      "embedding_error": "Il servizio di embedding (Ollama) non ha elaborato la domanda.",
+      "generation_error": "Il provider di generazione ha avuto un errore o ha inviato una risposta non valida.",
+      "generation_timeout": "Il provider di generazione non ha finito in tempo.",
+      "internal_error": "La risposta non è stata completata per un errore interno.",
+      "interrupted": "La risposta è stata interrotta."
+    },
+    "notices": {
+      "no_documents": "Nessun documento disponibile in questa knowledge base"
+    },
+    "errors": {
+      "generation_not_configured": "Il provider di generazione non è configurato: contatta l'amministratore.",
+      "answer_in_progress": "Una risposta è già in corso in questa conversazione.",
+      "conversation_not_found": "Conversazione non trovata.",
+      "not_retryable": "Non si può riprovare: solo l'ultima risposta, se è fallita, si può ripetere.",
+      "validation_error": "Il testo non è valido: controlla la lunghezza."
+    }
+  },
   "errors": {
     "invalid_credentials": "Nome utente o password non validi.",
     "not_authenticated": "Sessione scaduta: accedi di nuovo.",

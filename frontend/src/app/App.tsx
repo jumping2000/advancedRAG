@@ -5,7 +5,8 @@ import { BrowserRouter, Link, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth, type User } from "../auth/AuthContext";
 import { LanguageSelector } from "../components/LanguageSelector";
 import { browserLanguage, i18n } from "../i18n";
-import { KnowledgeBasePage, KnowledgeBasesPage } from "../pages/KnowledgeBasesPage";
+import { ChatPage } from "../pages/ChatPage";
+import { KnowledgeBasesPage } from "../pages/KnowledgeBasesPage";
 import { LoginPage } from "../pages/LoginPage";
 import { DocumentsPage } from "../pages/admin/DocumentsPage";
 import { KnowledgeBaseAdminPage } from "../pages/admin/KnowledgeBaseAdminPage";
@@ -48,7 +49,7 @@ function Layout() {
           <Route path="/admin/users" element={adminOnly(user, <UsersPage />)} />
           <Route path="/admin/kbs" element={adminOnly(user, <KnowledgeBaseAdminPage />)} />
           <Route path="/admin/documents" element={adminOnly(user, <DocumentsPage />)} />
-          <Route path="/kbs/:kbId" element={user ? <KnowledgeBasePage /> : <Navigate to="/login" replace />} />
+          <Route path="/kbs/:kbId" element={user ? <ChatPage /> : <Navigate to="/login" replace />} />
           <Route path="*" element={user ? <KnowledgeBasesPage /> : <Navigate to="/login" replace />} />
         </Routes>
       )}
