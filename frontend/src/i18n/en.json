@@ -148,6 +148,50 @@
       "internal_error": "Internal server error. Please try again."
     }
   },
+  "chat": {
+    "conversations": "Conversations",
+    "new": "New conversation",
+    "noConversations": "No conversations yet.",
+    "loading": "Loading…",
+    "empty": "Ask a question about this knowledge base.",
+    "rename": "Rename",
+    "renameLabel": "New title",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "confirm": "Confirm",
+    "confirmDelete": "Delete the conversation \"{{title}}\"? Its messages will be removed too.",
+    "question": "Question",
+    "send": "Send",
+    "generating": "Generating the answer…",
+    "you": "You",
+    "assistant": "Assistant",
+    "messages": "Messages",
+    "sources": "Sources",
+    "showExcerpt": "Show excerpt",
+    "hideExcerpt": "Hide excerpt",
+    "sourceUnavailable": "Source no longer available",
+    "page": "p. {{start}}",
+    "pages": "pp. {{start}}–{{end}}",
+    "retry": "Retry",
+    "failures": {
+      "embedding_error": "The embedding service (Ollama) could not process the question.",
+      "generation_error": "The generation provider failed or sent an invalid answer.",
+      "generation_timeout": "The generation provider did not finish in time.",
+      "internal_error": "The answer could not be completed because of an internal error.",
+      "interrupted": "The answer was interrupted."
+    },
+    "notices": {
+      "no_documents": "No document available in this knowledge base"
+    },
+    "errors": {
+      "generation_not_configured": "The generation provider is not configured: contact the administrator.",
+      "answer_in_progress": "An answer is already being generated in this conversation.",
+      "conversation_not_found": "Conversation not found.",
+      "not_retryable": "Retry is not possible: only the last answer, if it failed, can be repeated.",
+      "validation_error": "The text is not valid: check its length."
+    }
+  },
   "errors": {
     "invalid_credentials": "Invalid username or password.",
     "not_authenticated": "Your session has expired: please sign in again.",
