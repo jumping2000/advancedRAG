@@ -30,11 +30,11 @@ def configure_logging(level: str) -> None:
     """Log to stderr at `level`, so that the lines of the application (the chat writes its ids, counts, durations and
     error codes at INFO, REQ-102) reach the output of the container. `force` replaces the handler that Alembic installs
     on the root logger when the migrations run. uvicorn keeps its own loggers (they do not propagate to the root).
-    Two libraries stay at WARNING whatever the level: `sqlalchemy.engine` would log every statement of the database, and
-    `httpcore` the steps of every call to Ollama and to the provider; neither is content of the chat, but both are far
-    too much for a log that must stay free of it."""
+    Two libraries stay at WARNING whatever the level: `sqlalchemy` would log every statement of the database (and the
+    life of its connections), and `httpcore` the steps of every call to Ollama and to the provider. Neither is content
+    of the chat, but both are far too much for a log that must stay free of it."""
     logging.basicConfig(level=level, format=LOG_FORMAT, stream=sys.stderr, force=True)
-    for name in ("sqlalchemy.engine", "httpcore"):
+    for name in ("sqlalchemy", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
