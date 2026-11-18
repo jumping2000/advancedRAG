@@ -22,6 +22,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -117,10 +118,11 @@ def wait_until(condition: Callable[[], bool], what: str, timeout: float) -> None
         time.sleep(0.5)
 
 
-def sign_in_api(base_url: str, username: str, password: str) -> httpx.Client:
-    client = httpx.Client(base_url=base_url, timeout=60)
-    assert client.post("/api/auth/login", json={"username": username, "password": password}).status_code == 200
-    return client
+@contextmanager
+def sign_in_api(base_url: str, username: str, password: str) -> Iterator[httpx.Client]:
+    with httpx.Client(base_url=base_url, timeout=60) as client:
+        assert client.post("/api/auth/login", json={"username": username, "password": password}).status_code == 200
+        yield client
 
 
 def ask(client: httpx.Client, path: str, question: str) -> None:

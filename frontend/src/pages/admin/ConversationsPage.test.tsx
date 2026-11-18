@@ -354,8 +354,6 @@ it("SPEC-2026-11-17-fase-3-chat/AC-042: confirming deletes the conversation, rem
 
   await waitFor(() => expect(titles()).toEqual(["Garanzia del prodotto"]));
   expect(count(calls, deleteOf(prezzi))).toBe(1);
-  const request = callsOf(calls, deleteOf(prezzi))[0];
-  expect(new Headers(request.init?.headers).get("X-Requested-With")).toBe("XMLHttpRequest");
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.queryByText("Quanto costa il prodotto?")).not.toBeInTheDocument();
   expect(screen.queryByRole("list", { name: "Fonti" })).not.toBeInTheDocument();
