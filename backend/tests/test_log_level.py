@@ -50,7 +50,7 @@ from tests.test_chat_retry import retry
 from tests.test_env_example import ROOT, env_example
 
 # Loggers that the tests below leave as they found them
-TOUCHED = ("", "sqlalchemy.engine", "httpcore", "httpx", "uvicorn", "uvicorn.error", "uvicorn.access")
+TOUCHED = ("", "sqlalchemy", "sqlalchemy.engine", "httpcore", "httpx", "uvicorn", "uvicorn.error", "uvicorn.access")
 
 
 @pytest.fixture
@@ -218,7 +218,7 @@ async def test_a_full_round_at_info_writes_the_chat_lines_without_text_vectors_k
     chat.provider.fragments = [answer_text]
     vector = fake_vector(question, DIMENSIONS)
     # a process where nothing else configured the libraries: what the code pins itself is what counts
-    for name in ("sqlalchemy.engine", "httpcore", "httpx"):
+    for name in ("sqlalchemy", "sqlalchemy.engine", "httpcore", "httpx"):
         logging.getLogger(name).setLevel(logging.NOTSET)
     run.configure_logging("INFO")
 
@@ -249,3 +249,24 @@ async def test_a_full_round_at_info_writes_the_chat_lines_without_text_vectors_k
     chat_lines = [line for line in err.splitlines() if "app.chat" in line]
     assert any(f"conversation={conversation_id}" in line and "chat answer completed" in line for line in chat_lines)
     assert any("code=generation_error" in line for line in chat_lines)
+
+
+async def test_at_debug_the_libraries_that_trace_every_call_and_statement_stay_quiet(
+    chat: Chat, logging_state: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    question = "Zorgonauta7741 qual è il valore del parametro?"
+    await seed(chat, [chunk_row(0, "Il Frobnicatore9902 si regola con la chiave", question)])
+    for name in ("sqlalchemy", "sqlalchemy.engine", "httpcore", "httpx"):
+        logging.getLogger(name).setLevel(logging.NOTSET)
+    run.configure_logging("DEBUG")
+
+    async with chat.api("mario") as api:
+        done = events_of(await ask_new(api, chat.kb_a, question))
+
+    assert names_of(done)[-1] == "done"
+    err = capsys.readouterr().err
+    assert "chat answer completed" in err
+    assert "sqlalchemy" not in err
+    assert "httpcore" not in err
+    for secret in ("Zorgonauta7741", "Frobnicatore9902", API_KEY):
+        assert secret not in err, secret
