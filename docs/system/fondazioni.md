@@ -1,6 +1,6 @@
 # Area: fondazioni (stack, access, users, knowledge bases)
 
-- Last aligned: 2026-11-17
+- Last aligned: 2026-11-18
 - Linked specs: SPEC-2026-11-06-fase-1-fondazioni, SPEC-2026-11-07-fase-2-ingestion, SPEC-2026-11-17-fase-3-chat
 
 ## Current behaviour
@@ -111,9 +111,11 @@ KB goes through `KnowledgeBaseRepository`, which for any role other than the exa
 user's id in the same SQL query: a user lists and opens only the assigned KBs, and a KB that is not assigned, does not
 exist or has an id that is not a UUID gets the same 404 `kb_not_found`. The UI (Italian or English: browser language
 first, then the language saved in the profile) has the login page, the KB list as home page ("Le tue knowledge base"
-for a user, "Tutte le knowledge base" for the admin) with the opened KB under `/kbs/{id}`, and for the admin the Users,
-Knowledge Base and (phase 2, T-07) Documents pages; a `user` sees none of the admin menus. The Documents page is described in
-[ingestion.md](ingestion.md). The member picker of the Knowledge Base page offers only
+for a user, "Tutte le knowledge base" for the admin) and, for the admin, the Users, Knowledge Base, (phase 2, T-07)
+Documents and (phase 3, T-07) Conversations pages; a `user` sees none of the admin menus. Since phase 3 the opened KB under
+`/kbs/{id}` is the chat page (`ChatPage`: the KB name and description stay in the header, the own conversations on the left,
+the messages and the question field on the right). The Documents page is described in [ingestion.md](ingestion.md); the chat
+page, the Conversations page and everything behind them (retrieval, streaming, conversations) in [chat.md](chat.md). The member picker of the Knowledge Base page offers only
 active users; an inactive user already assigned stays listed, marked as deactivated.
 
 ## Interfaces
@@ -383,7 +385,10 @@ erDiagram
 - Isolation (constitution, anti-goal of the spec): every new access to a KB, its documents or conversations (phases
   2–3) goes through `KnowledgeBaseRepository.list_for`/`get_for` or an equivalent query joined with `kb_members` in the
   same SQL statement; only the exact role `admin` skips the join (fail closed). `tests/test_isolation.py` proves it
-  also by calling the repository directly and counting the statements.
+  also by calling the repository directly and counting the statements. Phase 3 extends the rule to conversations: a `user`
+  reads only their own conversations of KBs they can still see (`ConversationRepository.get_for`/`list_for`, one statement),
+  deleting a KB deletes its conversations by cascade, and the admin reads every conversation but writes in none of another
+  user's (see [chat.md](chat.md)).
 - "Not assigned", "unknown" and "not a UUID" must stay indistinguishable for a `user` (same 404 body); the admin
   routes check the role before the schema of the body, the ids and any database read, so a `user` gets the same 403
   whatever ids it sends (only a non-JSON or malformed body gets 422 first, which says nothing about the KBs).
@@ -457,9 +462,11 @@ The complete list, with the notes for phase 3, is in [ingestion.md](ingestion.md
   [KnowledgeBasesPage.tsx](../../frontend/src/pages/KnowledgeBasesPage.tsx),
   [KnowledgeBaseAdminPage.tsx](../../frontend/src/pages/admin/KnowledgeBaseAdminPage.tsx),
   [UsersPage.tsx](../../frontend/src/pages/admin/UsersPage.tsx),
-  [DocumentsPage.tsx](../../frontend/src/pages/admin/DocumentsPage.tsx) (phase 2, T-07).
+  [DocumentsPage.tsx](../../frontend/src/pages/admin/DocumentsPage.tsx) (phase 2, T-07),
+  [ChatPage.tsx](../../frontend/src/pages/ChatPage.tsx) and
+  [ConversationsPage.tsx](../../frontend/src/pages/admin/ConversationsPage.tsx) (phase 3, [chat.md](chat.md)).
 - Tests: `backend/tests/` (`test_isolation.py`, `test_knowledge_bases.py`, `test_users.py`, `test_auth.py`, ...),
-  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`, `test_documents_ui.py`), `frontend/src/**/*.test.tsx`;
+  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`, `test_documents_ui.py`, `test_chat_ui.py`, `test_conversations_ui.py`), `frontend/src/**/*.test.tsx`;
   phase 2, T-05: `test_docling.py`, `test_retry.py`, `test_pipeline_errors.py`, `test_retry_route.py`,
   `test_logging_privacy.py`; phase 2, T-06: `test_cleanup.py`, `test_document_delete.py`, `test_worker_recovery.py`; and the opt-in `tests/live/test_live_services.py` (`LIVE_SERVICES=1`, marker `live`, never in
   the default run or in CI: run it once by hand against your real Docling and Ollama).

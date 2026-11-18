@@ -8,6 +8,7 @@ import { browserLanguage, i18n } from "../i18n";
 import { ChatPage } from "../pages/ChatPage";
 import { KnowledgeBasesPage } from "../pages/KnowledgeBasesPage";
 import { LoginPage } from "../pages/LoginPage";
+import { ConversationsPage } from "../pages/admin/ConversationsPage";
 import { DocumentsPage } from "../pages/admin/DocumentsPage";
 import { KnowledgeBaseAdminPage } from "../pages/admin/KnowledgeBaseAdminPage";
 import { UsersPage } from "../pages/admin/UsersPage";
@@ -34,6 +35,7 @@ function Layout() {
                 <Link to="/admin/users">{t("users.menu")}</Link>
                 <Link to="/admin/kbs">{t("kbAdmin.menu")}</Link>
                 <Link to="/admin/documents">{t("documents.menu")}</Link>
+                <Link to="/admin/conversations">{t("convAdmin.menu")}</Link>
               </>
             )}
             <span>{user.username}</span>
@@ -49,6 +51,7 @@ function Layout() {
           <Route path="/admin/users" element={adminOnly(user, <UsersPage />)} />
           <Route path="/admin/kbs" element={adminOnly(user, <KnowledgeBaseAdminPage />)} />
           <Route path="/admin/documents" element={adminOnly(user, <DocumentsPage />)} />
+          <Route path="/admin/conversations" element={adminOnly(user, <ConversationsPage />)} />
           <Route path="/kbs/:kbId" element={user ? <ChatPage /> : <Navigate to="/login" replace />} />
           <Route path="*" element={user ? <KnowledgeBasesPage /> : <Navigate to="/login" replace />} />
         </Routes>
