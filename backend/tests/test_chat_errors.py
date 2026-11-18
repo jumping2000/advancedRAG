@@ -365,7 +365,16 @@ async def test_AC_031_eight_truly_concurrent_questions_in_one_conversation_one_i
                 )
                 for number, client in enumerate(clients)
             ]
-            refused, waiting = await asyncio.wait(tasks, timeout=SECONDS)
+            # collect the refusals as they arrive: the winner is held by the provider, so waiting for all the tasks
+            # would only end at the timeout; once the seven refusals are in, the provider is released
+            refused: list[asyncio.Task[Any]] = []
+            waiting = set(tasks)
+            deadline = time.monotonic() + SECONDS
+            while len(refused) < 7 and waiting and time.monotonic() < deadline:
+                finished, waiting = await asyncio.wait(
+                    waiting, timeout=deadline - time.monotonic(), return_when=asyncio.FIRST_COMPLETED
+                )
+                refused.extend(finished)
             chat.provider.release.set()
             answered = await asyncio.gather(*waiting)
         finally:

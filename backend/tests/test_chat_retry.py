@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from app.chat.repository import AnswerInProgress, ConversationRepository, NotRetryable
 from tests.test_chat_ask import (
@@ -726,3 +727,110 @@ async def test_AC_031_a_retry_that_meets_a_question_saving_its_pending_answer_ge
         ("user", "COMPLETED", None),
         ("assistant", "PENDING", None),
     ]
+
+
+# The retry route settles the answer when it fails after the restart and before the response ------------------------
+
+
+async def assert_settled_interrupted(chat: Chat, conversation: uuid.UUID) -> None:
+    """The conversation holds its question and one FAILED `interrupted` answer, and nothing is PENDING."""
+    assert shape(await messages_of(chat.engine, conversation)) == [
+        ("user", "COMPLETED", QUESTION, None),
+        ("assistant", "FAILED", "", "interrupted"),
+    ]
+    assert await pending_count(chat.engine) == 0
+
+
+async def test_a_retry_that_fails_after_the_restart_settles_the_answer_in_json_and_can_be_retried_at_once(
+    chat: Chat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route has put the answer back to PENDING and then cannot go on (here: the database fails when it reads the
+    question). Nobody would ever settle that answer: the route does, FAILED `interrupted`, and the client gets a JSON
+    error, not a stream and not a plain-text 500."""
+    await seed(chat, [chunk_row(0)])
+    conversation, failed = await failed_conversation(chat)
+    secret = "TESTO-SEGRETO-DEL-DATABASE"
+
+    async def broken(*_: Any, **__: Any) -> Any:
+        raise OperationalError("select", {}, Exception(secret))
+
+    monkeypatch.setattr(ConversationRepository, "question_of", broken)
+    with all_logs() as logs:
+        async with chat.api("mario") as api:
+            response = await retry(api, conversation, failed)
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    code, message = error_of(response)
+    assert code == "internal_error"
+    assert secret not in message
+    assert secret not in "\n".join(line for _, line in logs.lines)
+    await assert_settled_interrupted(chat, conversation)
+    monkeypatch.undo()
+    async with chat.api("mario") as api:  # the conversation is not blocked: the same answer is retried at once
+        events = events_of(await retry(api, conversation, failed))
+    assert done_message(events)["status"] == "COMPLETED"
+
+
+async def test_a_retry_that_finds_no_question_settles_the_answer_with_a_500_in_json_and_can_be_retried_at_once(
+    chat: Chat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await seed(chat, [chunk_row(0)])
+    conversation, failed = await failed_conversation(chat)
+    original = ConversationRepository.question_of
+    calls: list[int] = []
+
+    async def none_once(self: ConversationRepository, answer: Any) -> Any:
+        calls.append(1)
+        return None if len(calls) == 1 else await original(self, answer)
+
+    monkeypatch.setattr(ConversationRepository, "question_of", none_once)
+    async with chat.api("mario") as api:
+        response = await retry(api, conversation, failed)
+        assert response.status_code == 500
+        assert response.headers["content-type"].startswith("application/json")
+        assert error_of(response)[0] == "internal_error"
+        await assert_settled_interrupted(chat, conversation)
+        events = events_of(await retry(api, conversation, failed))  # the conversation exists: the second read is real
+
+    assert done_message(events)["status"] == "COMPLETED"
+
+
+async def test_an_answer_with_no_question_in_an_existing_conversation_is_a_500_and_is_settled(chat: Chat) -> None:
+    """Not made by the application, but a retry on it must neither hang nor leave a PENDING answer."""
+    conversation = await add_conversation(chat.engine, chat.kb_a, chat.users["mario"], FAILED)
+    failed = (await messages_of(chat.engine, conversation))[0]["id"]
+
+    async with chat.api("mario") as api:
+        response = await retry(api, conversation, failed)
+
+    assert response.status_code == 500
+    assert error_of(response)[0] == "internal_error"
+    (answer,) = await messages_of(chat.engine, conversation)
+    assert (answer["status"], answer["error_code"], answer["content"]) == ("FAILED", "interrupted", "")
+    assert await pending_count(chat.engine) == 0
+
+
+async def test_a_retry_whose_conversation_is_deleted_right_after_the_restart_gets_404_conversation_not_found(
+    chat: Chat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The conversation goes between the restart and the read of the question: 404 as for a conversation that is not
+    there (T-03 does the same when the conversation goes while the question is saved), nothing is left."""
+    await seed(chat, [chunk_row(0)])
+    conversation, failed = await failed_conversation(chat)
+    original = ConversationRepository.question_of
+
+    async def deleted_meanwhile(self: ConversationRepository, answer: Any) -> Any:
+        async with chat.engine.begin() as connection:
+            await connection.execute(text("delete from conversations where id = :id"), {"id": conversation})
+        return await original(self, answer)  # the question is gone with the conversation
+
+    monkeypatch.setattr(ConversationRepository, "question_of", deleted_meanwhile)
+    async with chat.api("mario") as api:
+        response = await retry(api, conversation, failed)
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+    assert error_of(response)[0] == "conversation_not_found"
+    assert await table_counts(chat.engine) == (0, 0, 0)
+    assert_no_requests(chat)
