@@ -31,11 +31,25 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
   (`user_not_found`, `kb_not_found`); admin routes put `require_admin` before path ids and body schema.
 - Name uniqueness is left to unique indexes on `lower()` with names trimmed first; `IntegrityError` 23505 → 409.
 - Backend tests never set an ORM object loaded in the test session to a value the database refuses (autoflush).
-- A signed-in page shows its load errors without `role="alert"`: the header language selector owns the alert.
+- A signed-in page shows its load errors without `role="alert"`: the header language selector owns the alert (except the
+  KB-not-found message of the chat page, which keeps the alert of phase 1: `KnowledgeBaseAdminPage.test.tsx`, AC-024).
 - Polling tests in Vitest call `vi.useFakeTimers({ shouldAdvanceTime: true })` before rendering.
 - Multipart `fetch` calls set no `Content-Type` (the browser adds the boundary): `FormData` plus `X-Requested-With`.
 - SSE responses send `X-Accel-Buffering: no` and a keepalive comment at least every 15 s (Nginx reads with a 60 s timeout).
-- Host ports in use by the e2e tests: 18080, 18180, 18181, 18280, 18380, 18480, 18543, 18544, 18580; next free: 18680.
+- Host ports in use by the e2e tests: 18080, 18180, 18181, 18280, 18380, 18480, 18543, 18544, 18580, 18680, 18780;
+  next free: 18880.
+- Lock order of the chat: every writer that takes a conversation row locks it BEFORE any of its messages (`start_answer`,
+  `complete_answer`, `restart_answer`, the delete and the cascade of a KB); the opposite order is a deadlock.
+- `ActiveAnswers` (`app.state.active_answers`) is in memory and single-process (ADR-003): never run more than one backend
+  process or replica without a new ADR (shared registry, review of `mark_interrupted`).
+- A `user` gets the same 404 for the conversation of another user, of an unassigned KB, an unknown id and an id that is not
+  a UUID, never 403; the admin reads every conversation and writes in none of another user's (403).
+- The e2e fake generation provider is the profile `generation` of `backend/tests/e2e/compose.fakes.yaml`, with
+  `E2E_GENERATION_URL` and `E2E_GENERATION_SCRIPT` (a JSON list: a string is a fragment, a number a pause in seconds); use a
+  fast script unless the test is about timing.
+- Only the multipart upload and `api.stream` send `X-Requested-With`; `api.delete`, `api.put` and `api.patch` do not: a
+  frontend test must not expect the header on them.
+- `trace_check.py` on a whole spec needs the test folders as ONE flag with two paths: `--tests backend/tests frontend/src`.
 
 ## Rules
 - Do not modify: applied database migrations already merged into `main` (`backend/migrations/versions/`): add a new one
@@ -87,6 +101,8 @@ removed here.
   per-KB isolation (`KnowledgeBaseRepository`), UI pages and i18n
 - `docs/system/ingestion.md`: documents and ingestion (upload API and validation, RQ worker, Docling and Ollama pipeline,
   chunks, indexing profiles and indexes, retention of originals, Documents page), with the notes for phase 3
+- `docs/system/chat.md`: chat (hybrid retrieval: vector + BM25 + RRF; answers streamed as SSE through Nginx; conversations,
+  messages and sources; admin read-only page "Conversazioni"; `ActiveAnswers`), with its known limits
 
 ## Documentation
 - Specs in `docs/specs/<id>/`. Read `spec.md` and `plan.md` before writing code.
