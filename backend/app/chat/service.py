@@ -29,8 +29,10 @@ The task that runs the steps of an answer is registered in `ActiveAnswers` (one 
 conversation: deleting the conversation (T-05) cancels it, which closes the connection to the provider, and the stream
 then ends without `done` or `error`. The answer is saved FAILED `interrupted` if it is still PENDING (when the delete
 went on to remove the conversation nothing is left to save); `complete_answer` never writes for a conversation that is
-gone. The one gap: a delete that arrives before the stream has started finds nothing to cancel, and that answer is
-generated to its end for nobody (it is not saved).
+gone. A delete that arrives before the stream has started finds nothing to cancel, so the task checks first thing that
+its answer is still PENDING (a deleted or settled answer is not started: `_Stopped`), and the route cancels again after
+it has deleted, which catches a task that registered in between. A task cancelled before its first step still ends the
+stream (the done callback of the task, not the task itself, tells the stream).
 """
 
 from __future__ import annotations
@@ -181,7 +183,7 @@ async def answer_events(
     except _Failure as failure:
         code = failure.code
     except _Stopped:
-        logger.info("chat answer stopped %s: the conversation is being deleted", ids)
+        logger.info("chat answer stopped %s: the conversation is deleted or the answer is settled", ids)
         await _fail_to_the_end(app, answer.id, "interrupted", ids, started)  # only if it is still PENDING
         return
     except Exception as error:
@@ -274,15 +276,15 @@ async def _with_keepalive(
         try:
             async for event in events:
                 queue.put_nowait(("event", event))
-        except asyncio.CancelledError:
-            queue.put_nowait(("stopped", None))  # nobody waits for it when this generator is the one that cancelled
-            raise
         except Exception as error:
             queue.put_nowait(("raise", error))
         else:
             queue.put_nowait(("end", None))
 
     producer = _track(asyncio.ensure_future(produce()))
+    # A task cancelled before its first step never runs `produce`: the callback is what tells the stream (nobody reads
+    # the queue when this generator is the one that cancelled the task)
+    producer.add_done_callback(lambda task: queue.put_nowait(("stopped", None)) if task.cancelled() else None)
     if on_start is not None:
         on_start(producer)
     try:
@@ -313,6 +315,10 @@ async def _answer(
     kb_id = conversation.kb_id
     question = user_message.content
     started = time.monotonic()
+    async with sessions() as session:
+        still_wanted = await ConversationRepository(session).is_pending(answer.id)
+    if not still_wanted:  # the conversation was deleted (or the answer settled) before this task took its first step
+        raise _Stopped
     profile = await active_profile(app)
 
     async with sessions() as session:

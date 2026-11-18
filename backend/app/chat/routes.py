@@ -285,8 +285,13 @@ async def delete_conversation(request: Request, conversation: ReadableConversati
     """Delete the conversation with its messages and sources. An answer being generated is stopped first (the
     connection to the provider closes), and only after the check of who asks: `ReadableConversation` has refused anyone
     who may not delete it."""
-    stopped = await service.active_answers(request.app).cancel(conversation.id)
-    if not await ConversationRepository(session).delete(conversation):
+    registry = service.active_answers(request.app)
+    stopped = await registry.cancel(conversation.id)
+    deleted = await ConversationRepository(session).delete(conversation)
+    # Again: an answer whose stream started after the first cancel and checked that it was pending before the rows
+    # were gone is stopped now (the next one to check finds nothing)
+    stopped = await registry.cancel(conversation.id) or stopped
+    if not deleted:
         raise conversation_not_found()  # deleted by someone else in the meantime
     logger.info(
         "chat conversation deleted conversation=%s kb=%s answer_stopped=%s",
