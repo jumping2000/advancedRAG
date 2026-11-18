@@ -21,6 +21,9 @@ def _is_http_url_with_host(value: str) -> bool:
     return parts.scheme in ("http", "https") and bool(parts.hostname) and not any(c.isspace() for c in value)
 
 
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
 class Settings(BaseSettings):
     # The repository-root .env also works when the backend runs from backend/ (the later file wins).
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore", hide_input_in_errors=True)
@@ -78,6 +81,9 @@ class Settings(BaseSettings):
     chat_context_chunks: int = Field(default=8, ge=1)
     chat_history_messages: int = Field(default=6, ge=0)
     chat_max_question_chars: int = Field(default=4000, ge=1)
+    # Level of the logging of the backend (configured at startup by `app.run`); only the backend reads it, the worker
+    # has its own logging. Any case; empty counts as not set. The lines of the chat are at INFO.
+    log_level: str = "INFO"
     chunk_target_words: int = 300
     chunk_min_words: int = 50
     chunk_max_words: int = 450
@@ -104,6 +110,14 @@ class Settings(BaseSettings):
         if problems:
             raise ValueError("; ".join(problems))
         return self
+
+    @field_validator("log_level")
+    @classmethod
+    def _check_log_level(cls, value: str) -> str:
+        level = value.strip().upper() or "INFO"
+        if level not in LOG_LEVELS:
+            raise ValueError(f"LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}")  # the value is not repeated
+        return level
 
     @field_validator("generation_base_url", "generation_model")
     @classmethod
