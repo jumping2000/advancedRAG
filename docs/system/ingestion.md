@@ -1,6 +1,6 @@
 # Area: ingestion (documents, worker, chunks and indexes)
 
-- Last aligned: 2026-11-07
+- Last aligned: 2026-11-18
 - Linked specs: SPEC-2026-11-07-fase-2-ingestion
 
 ## Current behaviour
@@ -432,7 +432,8 @@ erDiagram
   profile's own expression `embedding::vector(N)` (`embedding_expression(profile)`) with `<=>` so that the partial HNSW index
   is used; run the search with `SET LOCAL hnsw.iterative_scan = relaxed_order` (and a `hnsw.max_scan_tuples` that suits), because
   pgvector applies the `WHERE` after the HNSW scan and without it a filtered search can return fewer rows than asked.
-  BM25 queries use the `@@@` operator on `chunks` with `kb_id` as a filter field.
+  BM25 queries (as built in phase 3, see [chat.md](chat.md)) use the `|||` operator on `content` and `section_title`, which
+  tokenizes the question with the analyzer of each field and searches the tokens in OR, with `kb_id` as a filter field.
 
 ## Characterization tests
 - none: the area was built from the spec (greenfield); its acceptance tests are listed under References.

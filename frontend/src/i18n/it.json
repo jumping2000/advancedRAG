@@ -148,6 +148,18 @@
       "internal_error": "Errore interno del server. Riprova."
     }
   },
+  "convAdmin": {
+    "menu": "Conversazioni",
+    "title": "Conversazioni",
+    "kb": "Knowledge base",
+    "user": "Utente",
+    "allKbs": "Tutte",
+    "allUsers": "Tutti",
+    "titleColumn": "Titolo",
+    "date": "Data",
+    "count": "Messaggi",
+    "actions": "Azioni"
+  },
   "chat": {
     "conversations": "Conversazioni",
     "new": "Nuova conversazione",

@@ -1,6 +1,6 @@
 # SPEC-2026-11-17-fase-3-chat: Fase 3 – Retrieval ibrido e chat con citazioni
 
-- Status: approved
+- Status: implemented
 - Owner: jumping2000
 
 ## Problem and goal
