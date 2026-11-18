@@ -27,9 +27,10 @@ new conversation is the first 80 characters of it, without trailing spaces. A si
 (`user`, COMPLETED) and the answer (`assistant`, PENDING); the partial unique index `messages_one_pending` allows one PENDING
 answer per conversation, so two simultaneous questions, or a question racing a retry, give the loser 409
 `answer_in_progress`, never a database error. The retry has no body: after the conversation and the provider checks it is
-404 `conversation_not_found` for a message id that is not a UUID or not in the conversation, 409 `answer_in_progress`
-(whichever message it names) and 409 `not_retryable` unless the message is the last of the conversation, an answer and
-FAILED (checked inside the `UPDATE`); it puts that answer back to PENDING in place and generates again.
+404 `conversation_not_found` for a message id that is not a UUID or not in the conversation (checked first), then 409
+`answer_in_progress` when another answer of the conversation is being generated (the message is known, and the loser of a
+race on `messages_one_pending` gets the same), then 409 `not_retryable` unless the message is the last of the conversation, an
+answer and FAILED (checked inside the `UPDATE`); it puts that answer back to PENDING in place and generates again.
 
 **The retrieval** works only on the KB of the conversation, on documents that are READY and on chunks of the active
 indexing profile (the profile of the current `EMBEDDING_*` and `CHUNK_*` settings, read or created at the first question and
@@ -122,7 +123,7 @@ which closes the connection to the provider, and the stream then ends with neith
 twice, before and after deleting, and the task of an answer refuses to start when its answer is no longer PENDING
 (`is_pending`), so a delete that arrives before the stream started is not missed. `complete_answer` never writes for a
 conversation that is gone. Lock order: every writer that takes a conversation row takes it BEFORE any of its messages
-(`complete_answer`, `restart_answer` and `start_answer` lock the row with `FOR NO KEY UPDATE`/key share first; the DELETE, and
+(`complete_answer`, `restart_answer` and `start_answer` lock the row with `FOR NO KEY UPDATE`, SQLAlchemy's `with_for_update(key_share=True)`, first; the DELETE, and
 the cascade of a KB, lock the conversation and then remove its messages); the opposite order made an answer saved at the moment
 of a delete a deadlock. `fail_answer` and `mark_interrupted` change one message each and take no conversation row. At the start
 of the backend (`app/run.py`, before uvicorn) `mark_interrupted` ends every PENDING answer as FAILED `interrupted` (REQ-017).
@@ -286,10 +287,14 @@ stateDiagram-v2
 classDiagram
     class ChatRoutes {
         +start_conversation(kb_id, question)
-        +ask(conversation_id, question)
-        +retry(conversation_id, message_id)
-        +list, get, rename, delete, source
-        +admin_list(kb_id, user_id)
+        +ask_in_conversation(conversation_id, question)
+        +retry_answer(conversation_id, message_id)
+        +list_conversations(kb_id)
+        +read_conversation(conversation_id)
+        +rename_conversation(conversation_id, title)
+        +delete_conversation(conversation_id)
+        +read_source(conversation_id, message_id, number)
+        +list_all_conversations(kb_id, user_id)
     }
     class ConversationRepository {
         +list_for(user, kb_id)
@@ -306,6 +311,9 @@ classDiagram
     }
     class AnswerResponse {
         +abandon()
+    }
+    class answer_events {
+        +answer_events(request, user, conversation, user_message, answer)
     }
     class ActiveAnswers {
         +register(conversation_id, task)
@@ -340,12 +348,13 @@ classDiagram
     class ConversationView
     ChatRoutes ..> ConversationRepository
     ChatRoutes ..> AnswerResponse : streams
-    AnswerResponse ..> ActiveAnswers : registers the task
-    AnswerResponse ..> retrieval
-    AnswerResponse ..> prompt
-    AnswerResponse ..> OpenAICompatibleClient
-    AnswerResponse ..> OllamaEmbedder
-    AnswerResponse ..> ConversationRepository : complete_answer, fail_answer
+    AnswerResponse ..> answer_events : body of the response
+    answer_events ..> ActiveAnswers : registers the task, through _with_keepalive
+    answer_events ..> retrieval
+    answer_events ..> prompt
+    answer_events ..> OpenAICompatibleClient
+    answer_events ..> OllamaEmbedder
+    answer_events ..> ConversationRepository : complete_answer, fail_answer
     ChatRoutes ..> ActiveAnswers : cancel on delete
     retrieval ..> KnowledgeBaseRepository : visible_kb_ids
     ConversationRepository ..> KnowledgeBaseRepository : visible_kb_ids
@@ -429,13 +438,21 @@ erDiagram
   `HEALTH_CHECK_TIMEOUT_SECONDS` + 1 s; a shorter block is not seen by the test.
 - Documents indexed with an old indexing profile (another model, size or chunker setting) are not searchable: there is no
   re-indexing (spec non-scope); the admin uploads them again.
-- `CHAT_HISTORY_MESSAGES` is accepted when odd; the history is made of whole exchanges, so an odd limit can give one message
-  fewer than asked.
+- An odd `CHAT_HISTORY_MESSAGES` is accepted (owner's decision). `ConversationRepository.history` filters the messages first
+  and applies the limit to what is left, so the limit is exact, but with an odd value (for example 5) the history can start
+  with an answer whose question was cut off: the provider then gets `system, assistant, user, ...`, and some
+  OpenAI-compatible providers want a `user` message first. Use an even value (the default is 6).
 - `[n]` inside code in an answer is treated like any other text: it is kept when it is a source and removed otherwise.
 - ChatPage, accepted low findings of the T-06 review: (1) a stream that closes cleanly before the `conversation` event on a NEW
   conversation leaves the controls disabled until the page is reloaded; (2) a question can be sent during the short window in
   which a conversation is loading, and the load then overwrites the messages; (3) a `done` event without `message` would make the
   view throw (the backend always sends it).
+- Admin page «Conversazioni», four low edge cases accepted as known limits (no code change): (a) when a filter hides the
+  conversation that is open, its messages stay on screen without the title; (b) when opening a conversation fails with 404 the
+  selection stays and the list is not read again; (c) if the admin opens conversation B while the delete of A is in flight, B is
+  closed; (d) a list request already in flight when a delete succeeds can bring the deleted row back until the next load.
+- `spec.md` still says `@@@` for the BM25 operator in its Constraints text; the code uses `|||` (see The retrieval above). This
+  page is the source of truth: a task does not change the spec.
 - No rewriting of the question, no reranker, no evaluation, no export, search or paging of the conversations, no feedback on the
   answers, no provider other than OpenAI-compatible (spec non-scope).
 
