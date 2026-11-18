@@ -195,3 +195,40 @@ async def retry_answer(
             )  # the type, never the message
             raise ApiError(500, "internal_error", "Internal server error") from None
         raise
+
+
+# Skeleton of T-05: the routes answer 501 until they are built ---------------------------------------------------
+
+
+def not_implemented() -> ApiError:
+    return ApiError(501, "not_implemented", "Not implemented")
+
+
+@router.get("/kbs/{kb_id}/conversations")
+async def list_conversations() -> None:
+    raise not_implemented()
+
+
+@router.get("/conversations/{conversation_id}")
+async def read_conversation() -> None:
+    raise not_implemented()
+
+
+@router.patch("/conversations/{conversation_id}")
+async def rename_conversation() -> None:
+    raise not_implemented()
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation() -> None:
+    raise not_implemented()
+
+
+@router.get("/conversations/{conversation_id}/messages/{message_id}/sources/{number}")
+async def read_source() -> None:
+    raise not_implemented()
+
+
+@router.get("/admin/conversations")
+async def list_all_conversations() -> None:
+    raise not_implemented()
