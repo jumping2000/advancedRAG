@@ -53,6 +53,7 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-480}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-20}
       # The generation provider of the chat (phase 3): only the backend calls it, the worker does not get these
       GENERATION_BASE_URL: ${GENERATION_BASE_URL:-}

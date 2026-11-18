@@ -23,6 +23,7 @@ with the notice `no_documents`.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
@@ -47,6 +48,8 @@ from app.knowledge_bases.routes import kb_not_found, visible_kb_id
 # The title is the first characters of the question, without the spaces the cut may leave at its end
 TITLE_LENGTH = 80
 STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -175,9 +178,20 @@ async def retry_answer(
         raise conversation_not_found() from None
     try:
         question = await repository.question_of(answer)
-        if question is None:  # an answer with no question before it: not made by the application
-            raise RuntimeError("the answer has no question")
+        if question is None:
+            if await repository.get_for(user, conversation.id) is None:
+                raise conversation_not_found()  # deleted between the restart and now, as when a question is saved
+            raise RuntimeError("the answer has no question")  # not made by the application
         return await respond(request, session, user, conversation, question, answer)
-    except BaseException:
-        await service.settle_interrupted(request.app, conversation, answer)  # it is PENDING and nobody will answer it
+    except BaseException as error:
+        # The answer is PENDING again and nothing else would ever settle it
+        await service.settle_interrupted(request.app, conversation, answer)
+        if isinstance(error, Exception) and not isinstance(error, ApiError):
+            logger.error(
+                "chat retry conversation=%s message=%s: unexpected error %s",
+                conversation.id,
+                answer.id,
+                type(error).__name__,
+            )  # the type, never the message
+            raise ApiError(500, "internal_error", "Internal server error") from None
         raise

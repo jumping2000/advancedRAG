@@ -3,6 +3,7 @@ PENDING by the previous run, start uvicorn."""
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -22,8 +23,19 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
-def configure_logging(level: str) -> None:  # skeleton of the owner's request (T-04): the tests fail on their assertions
-    return None
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"  # the one of the worker
+
+
+def configure_logging(level: str) -> None:
+    """Log to stderr at `level`, so that the lines of the application (the chat writes its ids, counts, durations and
+    error codes at INFO, REQ-102) reach the output of the container. `force` replaces the handler that Alembic installs
+    on the root logger when the migrations run. uvicorn keeps its own loggers (they do not propagate to the root).
+    Two libraries stay at WARNING whatever the level: `sqlalchemy.engine` would log every statement of the database, and
+    `httpcore` the steps of every call to Ollama and to the provider; neither is content of the chat, but both are far
+    too much for a log that must stay free of it."""
+    logging.basicConfig(level=level, format=LOG_FORMAT, stream=sys.stderr, force=True)
+    for name in ("sqlalchemy.engine", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def migrate(database_url: URL) -> None:
@@ -52,6 +64,7 @@ async def bootstrap(settings: Settings) -> None:
 def main() -> None:
     settings = get_settings()
     migrate(settings.sqlalchemy_url)
+    configure_logging(settings.log_level)  # after the migrations: Alembic configures logging too, this one must win
     try:
         asyncio.run(bootstrap(settings))
     except MissingAdminConfig as error:
