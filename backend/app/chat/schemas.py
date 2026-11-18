@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.chat.retrieval import Candidate
 from app.db.models import Message
@@ -60,3 +60,33 @@ class MessageOut(BaseModel):
             created_at=message.created_at,
             sources=list(sources),
         )
+
+
+class ConversationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    kb_id: uuid.UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationDetail(ConversationOut):
+    messages: list[MessageOut]
+    read_only: bool
+
+
+class SourceExcerpt(SourceOut):
+    available: bool
+    content: str | None
+
+
+class AdminConversationOut(ConversationOut):
+    username: str
+    kb_name: str
+    message_count: int
+
+
+class TitleIn(BaseModel):
+    title: str

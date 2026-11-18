@@ -70,6 +70,20 @@ _MESSAGES: dict[str, str] = {
 _background: set[asyncio.Task[Any]] = set()
 
 
+class ActiveAnswers:
+    """Skeleton of T-05."""
+
+    def register(self, conversation_id: uuid.UUID, task: asyncio.Task[Any]) -> None:
+        raise NotImplementedError
+
+    async def cancel(self, conversation_id: uuid.UUID) -> bool:
+        raise NotImplementedError
+
+
+def active_answers(app: FastAPI) -> ActiveAnswers:
+    raise NotImplementedError
+
+
 class _Failure(Exception):
     """A step of the answer failed in a way that is told to the client with this code."""
 

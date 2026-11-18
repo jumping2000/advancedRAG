@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import DateTime, Text, and_, exists, func, insert, literal, or_, select, tuple_, update
@@ -26,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.chat.retrieval import Candidate
+from app.chat.schemas import MessageOut, SourceExcerpt
 from app.db.models import Conversation, Message, MessageSource, User
 from app.knowledge_bases.repository import FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, KnowledgeBaseRepository
 
@@ -60,9 +62,41 @@ def _sqlstate(error: IntegrityError) -> str | None:
     return state
 
 
+@dataclass(frozen=True)
+class AdminConversationRow:
+    id: uuid.UUID
+    kb_id: uuid.UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    username: str
+    kb_name: str
+    message_count: int
+
+
 class ConversationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    # Skeleton of T-05: the stubs that the tests run against ---------------------------------------------------------
+
+    async def list_for(self, user: User, kb_id: uuid.UUID) -> list[Conversation]:
+        raise NotImplementedError
+
+    async def read_messages(self, conversation: Conversation) -> list[MessageOut]:
+        raise NotImplementedError
+
+    async def rename(self, conversation: Conversation, title: str) -> Conversation | None:
+        raise NotImplementedError
+
+    async def delete(self, conversation: Conversation) -> bool:
+        raise NotImplementedError
+
+    async def excerpt(self, conversation: Conversation, message_id: uuid.UUID, number: int) -> SourceExcerpt | None:
+        raise NotImplementedError
+
+    async def list_all(self, kb_id: uuid.UUID | None, user_id: uuid.UUID | None) -> list[AdminConversationRow]:
+        raise NotImplementedError
 
     # Reads ----------------------------------------------------------------------------------------------------------
 
