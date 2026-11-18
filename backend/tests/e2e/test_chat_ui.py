@@ -1,5 +1,5 @@
 # SPEC-2026-11-17-fase-3-chat
-"""AC-038 and AC-044 (REQ-019, REQ-021): the chat in a real browser against the full docker compose stack, through Nginx.
+"""AC-038 and AC-044 (REQ-019, REQ-021): the chat in a real browser against the full Compose stack, through Nginx.
 
 The stack is `compose.yaml` plus `compose.fakes.yaml` (the fake Ollama and Docling) and its profile `generation`: a fake
 generation provider that streams a fragment every 20 seconds for 90 seconds in all. The admin uploads a text through
@@ -124,7 +124,9 @@ def kb_name(stack: str) -> str:
         assert created.status_code == 201
         documents = f"/api/kbs/{created.json()['id']}/documents"
         uploaded = api.post(
-            documents, files={"file": ("guida.txt", GUIDE, "text/plain")}, headers={"X-Requested-With": "XMLHttpRequest"}
+            documents,
+            files={"file": ("guida.txt", GUIDE, "text/plain")},
+            headers={"X-Requested-With": "XMLHttpRequest"},
         )
         assert uploaded.status_code == 202
         wait_until(
@@ -192,7 +194,7 @@ def test_AC_044_038_each_fragment_reaches_the_browser_within_2_seconds_through_n
         assert abs(late) <= TOLERANCE, f"'{word}' arrived {late:+.0f} ms from when the provider sent it"
 
     # AC-038: the numbered source, and the excerpt of the cited chunk when the citation is clicked
-    answer = page.get_by_role("list", name="Messages").get_by_role("listitem").last
+    answer = page.get_by_role("list", name="Messages").locator("> li").last
     expect(answer).to_contain_text("alfa bravo charlie delta echo")
     expect(page.get_by_role("list", name="Sources").get_by_role("listitem")).to_have_count(1)
     expect(page.get_by_role("list", name="Sources")).to_contain_text("guida.txt")

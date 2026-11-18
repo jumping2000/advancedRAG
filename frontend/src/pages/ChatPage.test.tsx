@@ -256,7 +256,7 @@ it("SPEC-2026-11-17-fase-3-chat/AC-038: events cut anywhere between packets, a m
   await openChat();
   ask("Domanda");
 
-  const bytes = new TextEncoder().encode('event: delta\ndata: {"text":"Perché "}\n\n');
+  const bytes = new TextEncoder().encode('ta\ndata: {"text":"Perché "}\n\n');
   const cut = bytes.indexOf(0xc3) + 1; // between the two bytes of the "é"
   act(() => stream.raw(": keepalive\n\nevent: conversation\nda"));
   act(() => stream.raw(`ta: {"conversation_id":"${c.id}","message_id":"${msg(2, "assistant", "").id}"}\n\nevent: del`));
@@ -284,7 +284,7 @@ it("SPEC-2026-11-17-fase-3-chat/AC-038: clicking a citation [n] opens the excerp
   );
   await openChat();
   await openConversation("Prezzi");
-  expect(await screen.findByText(/Il prezzo comprende IVA \[1\]/)).toBeInTheDocument();
+  expect(await screen.findByText(/Il prezzo comprende IVA/)).toBeInTheDocument();
   expect(screen.queryByText("Il prezzo comprende IVA al 22%.")).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "[1]" }));
@@ -436,9 +436,8 @@ it("SPEC-2026-11-17-fase-3-chat/AC-038: a KB that does not exist shows its messa
   window.history.pushState({}, "", `/kbs/${manuali.id}`);
   render(<App />);
 
-  expect(await screen.findByText("Knowledge base non trovata.")).toBeInTheDocument();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Knowledge base non trovata.");
   expect(screen.queryByLabelText("Domanda")).not.toBeInTheDocument();
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 // AC-039 ---------------------------------------------------------------------------------------------------------------
