@@ -21,11 +21,16 @@ role.
 
 Lock order. Every writer that takes a conversation row takes it BEFORE any of its messages: `complete_answer` and
 `restart_answer` lock the conversation row (`FOR NO KEY UPDATE`) as their first statement, then change the message and
-touch the conversation; `start_answer` inserts messages (a key-share lock on the conversation row) and touches the
-conversation; the DELETE of a conversation, and of a KB (the cascade), locks the conversation row and then removes its
-messages. With the opposite order (message first, then conversation, as the first version of the two savers did) an
-answer saved at the moment of a delete is a deadlock, which PostgreSQL resolves by aborting one of the two. The savers
-that find the conversation gone end quietly (`complete_answer` gives None, `restart_answer` raises `MessageNotFound`).
+touch the conversation; `start_answer` does the same before it inserts the question and the PENDING answer (a plain
+insert takes only a key-share lock on the row, so a question that inserted first would hold the unique entry of its
+PENDING answer while waiting for the row that a retry holds, and the retry would wait for the entry: a deadlock); the
+DELETE of a conversation, and of a KB (the cascade), locks the conversation row and then removes its messages. With the
+opposite order an answer saved at the moment of a delete, or a question and a retry together, is a deadlock, which
+PostgreSQL resolves by aborting one of the two. The savers that find the conversation gone end quietly
+(`complete_answer` gives None, `restart_answer` raises `MessageNotFound`, `start_answer` raises `ConversationGone`).
+The writers that take no conversation row (`fail_answer`, `mark_interrupted`) change one message each and wait for
+nothing else, so they cannot be part of a cycle: a question that waits for the unique entry of a PENDING answer that
+one of them is settling just gets it released.
 """
 
 from __future__ import annotations
@@ -316,7 +321,14 @@ class ConversationRepository:
 
     async def start_answer(self, conversation: Conversation, question: str) -> tuple[Message, Message]:
         """Save the question (COMPLETED) and its answer (PENDING, empty) in one transaction, and mark the activity of
-        the conversation. `AnswerInProgress` if it already has a PENDING answer: nothing is saved then."""
+        the conversation. `AnswerInProgress` if it already has a PENDING answer: nothing is saved then. The conversation
+        row is locked first (see the module: lock order); `ConversationGone` if it is gone."""
+        locked = await self.session.scalar(
+            select(Conversation.id).where(Conversation.id == conversation.id).with_for_update(key_share=True)
+        )
+        if locked is None:
+            await self.session.commit()  # nothing was written: it only ends the transaction
+            raise ConversationGone
         now = datetime.now(UTC)
         # The answer is one microsecond after the question, so that the order by `created_at` is the order of the
         # conversation (both rows of one transaction would otherwise have the same `now()`)
@@ -482,6 +494,14 @@ class ConversationRepository:
             .limit(1)
         )
         return question
+
+    async def is_pending(self, message_id: uuid.UUID) -> bool:
+        """Whether the message exists and is a PENDING answer: False once the conversation was deleted or the answer
+        settled, so an answer that no one waits for any more is not started."""
+        found = await self.session.scalar(
+            select(Message.id).where(Message.id == message_id, Message.status == "PENDING")
+        )
+        return found is not None
 
     async def mark_interrupted(self) -> int:
         """End every PENDING answer as FAILED `interrupted`, without text, and return how many: the answers that the
