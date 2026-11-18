@@ -24,6 +24,13 @@ an answer that is still PENDING. When the conversation is deleted while the answ
 it: the answer is not saved and the stream ends with neither `done` nor `error`. Logs hold the ids of the conversation,
 the message and the KB, counts, durations and error codes: never a question, an answer, a title, a chunk, a vector or
 the key; an unexpected exception is logged by its type only.
+
+The task that runs the steps of an answer is registered in `ActiveAnswers` (one per process, ADR-003) while it runs, by
+conversation: deleting the conversation (T-05) cancels it, which closes the connection to the provider, and the stream
+then ends without `done` or `error`. The answer is saved FAILED `interrupted` if it is still PENDING (when the delete
+went on to remove the conversation nothing is left to save); `complete_answer` never writes for a conversation that is
+gone. The one gap: a delete that arrives before the stream has started finds nothing to cancel, and that answer is
+generated to its end for nobody (it is not saved).
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Coroutine, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Sequence
 from typing import Any, Literal, cast
 
 from fastapi import FastAPI, Request
@@ -58,6 +65,8 @@ logger = logging.getLogger(__name__)
 # Seconds without an event after which a keepalive comment is sent
 KEEPALIVE_SECONDS = 15.0
 KEEPALIVE_EVENT = ": keepalive\n\n"
+# Seconds that the delete of a conversation waits for its answer to stop
+CANCEL_WAIT_SECONDS = 10
 
 AnswerError = Literal["embedding_error", "generation_error", "generation_timeout", "interrupted", "internal_error"]
 _MESSAGES: dict[str, str] = {
@@ -71,17 +80,51 @@ _background: set[asyncio.Task[Any]] = set()
 
 
 class ActiveAnswers:
-    """Skeleton of T-05."""
+    """The tasks that generate answers in this process, by conversation (a single process generates them: ADR-003; with
+    more processes the registry would have to be shared). A task is registered when it starts and forgotten when it
+    ends, whatever way."""
+
+    def __init__(self) -> None:
+        self._tasks: dict[uuid.UUID, set[asyncio.Task[Any]]] = {}
 
     def register(self, conversation_id: uuid.UUID, task: asyncio.Task[Any]) -> None:
-        raise NotImplementedError
+        self._tasks.setdefault(conversation_id, set()).add(task)
+        task.add_done_callback(lambda done: self._forget(conversation_id, done))
+
+    def _forget(self, conversation_id: uuid.UUID, task: asyncio.Task[Any]) -> None:
+        tasks = self._tasks.get(conversation_id)
+        if tasks is not None:
+            tasks.discard(task)
+            if not tasks:
+                del self._tasks[conversation_id]
 
     async def cancel(self, conversation_id: uuid.UUID) -> bool:
-        raise NotImplementedError
+        """Cancel the running answer of the conversation and wait until it has cleaned up (the connection to the
+        provider is closed then), at most `CANCEL_WAIT_SECONDS`. True if there was one."""
+        running = [task for task in self._tasks.get(conversation_id, ()) if not task.done()]
+        if not running:
+            return False
+        for task in running:
+            task.cancel()
+        _, late = await asyncio.wait(running, timeout=CANCEL_WAIT_SECONDS)
+        if late:
+            logger.warning(
+                "chat conversation=%s: an answer did not stop within %d s", conversation_id, CANCEL_WAIT_SECONDS
+            )
+        return True
 
 
 def active_answers(app: FastAPI) -> ActiveAnswers:
-    raise NotImplementedError
+    """The registry of the app, created at its first use and kept in `app.state.active_answers`."""
+    registry: ActiveAnswers | None = getattr(app.state, "active_answers", None)
+    if registry is None:
+        registry = ActiveAnswers()
+        app.state.active_answers = registry
+    return registry
+
+
+class _Stopped(Exception):
+    """The task of the answer was cancelled from outside (the conversation is being deleted): nothing to tell."""
 
 
 class _Failure(Exception):
@@ -125,14 +168,22 @@ async def answer_events(
     try:
         yield _event("conversation", {"conversation_id": str(conversation.id), "message_id": str(answer.id)})
         logger.info("chat answer started %s", ids)
+        registry = active_answers(app)
         async with contextlib.aclosing(
-            _with_keepalive(_answer(app, user, conversation, user_message, answer, ids))
+            _with_keepalive(
+                _answer(app, user, conversation, user_message, answer, ids),
+                lambda task: registry.register(conversation.id, task),
+            )
         ) as events:
             async for event in events:
                 yield event
         return
     except _Failure as failure:
         code = failure.code
+    except _Stopped:
+        logger.info("chat answer stopped %s: the conversation is being deleted", ids)
+        await _fail_to_the_end(app, answer.id, "interrupted", ids, started)  # only if it is still PENDING
+        return
     except Exception as error:
         logger.error("chat answer %s: unexpected error %s", ids, type(error).__name__)  # the type, never the message
         code = "internal_error"
@@ -210,22 +261,30 @@ async def _fail_to_the_end(app: FastAPI, answer_id: uuid.UUID, code: AnswerError
     await _shielded(_fail(app, answer_id, code, ids, started))
 
 
-async def _with_keepalive(events: AsyncGenerator[str]) -> AsyncGenerator[str]:
-    """The events of `events`, produced by a task of their own, plus a keepalive comment whenever nothing arrives for
-    `KEEPALIVE_SECONDS`. An exception of `events` is raised here; when this generator is closed or cancelled the task is
-    cancelled."""
+async def _with_keepalive(
+    events: AsyncGenerator[str], on_start: Callable[[asyncio.Task[Any]], None] | None = None
+) -> AsyncGenerator[str]:
+    """The events of `events`, produced by a task of their own (given to `on_start`, which registers it), plus a
+    keepalive comment whenever nothing arrives for `KEEPALIVE_SECONDS`. An exception of `events` is raised here; when
+    this generator is closed or cancelled the task is cancelled; when the task is cancelled from outside `_Stopped` is
+    raised here."""
     queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
     async def produce() -> None:
         try:
             async for event in events:
                 queue.put_nowait(("event", event))
+        except asyncio.CancelledError:
+            queue.put_nowait(("stopped", None))  # nobody waits for it when this generator is the one that cancelled
+            raise
         except Exception as error:
             queue.put_nowait(("raise", error))
         else:
             queue.put_nowait(("end", None))
 
     producer = _track(asyncio.ensure_future(produce()))
+    if on_start is not None:
+        on_start(producer)
     try:
         while True:
             try:
@@ -237,6 +296,8 @@ async def _with_keepalive(events: AsyncGenerator[str]) -> AsyncGenerator[str]:
                 yield value
             elif kind == "raise":
                 raise value
+            elif kind == "stopped":
+                raise _Stopped
             else:
                 return
     finally:

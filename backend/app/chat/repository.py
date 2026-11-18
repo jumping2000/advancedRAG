@@ -1,4 +1,4 @@
-"""Conversations, messages and the sources of the answers (SPEC-2026-11-17-fase-3-chat, T-03 and T-04).
+"""Conversations, messages and the sources of the answers (SPEC-2026-11-17-fase-3-chat, T-03, T-04 and T-05).
 
 A conversation belongs to one user and one KB. Every read of a conversation for a user goes through `get_for`, which is
 one SQL statement: the author and a KB the user can see (`KnowledgeBaseRepository.visible_kb_ids`), so a conversation of
@@ -11,6 +11,21 @@ deleted, or that ended already, is not touched. `restart_answer` (T-04) puts the
 place, for the retry; `mark_interrupted` ends the answers that the previous backend left PENDING. The partial unique
 index `messages_one_pending` refuses a second PENDING answer in a conversation, also between simultaneous requests
 (`AnswerInProgress`). Nothing here logs: questions, answers and titles never reach a log.
+
+T-05 adds what the author does with a conversation and what the admin reads. `list_for` is the same kind of statement as
+`get_for` (the author, a KB the user can see). `rename`, `delete` and `excerpt` take the conversation that `get_for`
+(or, for the admin, `get_for_admin`) returned, so they cannot be reached for a conversation the caller may not use;
+`excerpt` in addition looks the chunk up in the KB of that conversation only, in the same statement as the source, and
+only for a cited source of a message of that conversation. `list_all` has no user: the caller has checked the admin
+role.
+
+Lock order. Every writer that takes a conversation row takes it BEFORE any of its messages: `complete_answer` and
+`restart_answer` lock the conversation row (`FOR NO KEY UPDATE`) as their first statement, then change the message and
+touch the conversation; `start_answer` inserts messages (a key-share lock on the conversation row) and touches the
+conversation; the DELETE of a conversation, and of a KB (the cascade), locks the conversation row and then removes its
+messages. With the opposite order (message first, then conversation, as the first version of the two savers did) an
+answer saved at the moment of a delete is a deadlock, which PostgreSQL resolves by aborting one of the two. The savers
+that find the conversation gone end quietly (`complete_answer` gives None, `restart_answer` raises `MessageNotFound`).
 """
 
 from __future__ import annotations
@@ -20,15 +35,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import DateTime, Text, and_, exists, func, insert, literal, or_, select, tuple_, update
+from sqlalchemy import DateTime, Text, and_, delete, exists, func, insert, literal, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.chat.retrieval import Candidate
-from app.chat.schemas import MessageOut, SourceExcerpt
-from app.db.models import Conversation, Message, MessageSource, User
+from app.chat.schemas import MessageOut, SourceExcerpt, SourceOut
+from app.db.models import Chunk, Conversation, KnowledgeBase, Message, MessageSource, User
 from app.knowledge_bases.repository import FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, KnowledgeBaseRepository
 
 # A text has at least one character that Python's `str.isspace` does not count as white space (`build_messages` drops
@@ -78,26 +93,6 @@ class ConversationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    # Skeleton of T-05: the stubs that the tests run against ---------------------------------------------------------
-
-    async def list_for(self, user: User, kb_id: uuid.UUID) -> list[Conversation]:
-        raise NotImplementedError
-
-    async def read_messages(self, conversation: Conversation) -> list[MessageOut]:
-        raise NotImplementedError
-
-    async def rename(self, conversation: Conversation, title: str) -> Conversation | None:
-        raise NotImplementedError
-
-    async def delete(self, conversation: Conversation) -> bool:
-        raise NotImplementedError
-
-    async def excerpt(self, conversation: Conversation, message_id: uuid.UUID, number: int) -> SourceExcerpt | None:
-        raise NotImplementedError
-
-    async def list_all(self, kb_id: uuid.UUID | None, user_id: uuid.UUID | None) -> list[AdminConversationRow]:
-        raise NotImplementedError
-
     # Reads ----------------------------------------------------------------------------------------------------------
 
     async def get_for(self, user: User, conversation_id: uuid.UUID) -> Conversation | None:
@@ -117,6 +112,108 @@ class ConversationRepository:
             select(Conversation).where(Conversation.id == conversation_id)
         )
         return conversation
+
+    async def list_for(self, user: User, kb_id: uuid.UUID) -> list[Conversation]:
+        """The user's own conversations of the KB, by last activity (then id) descending, in one statement: the author
+        and a KB the user can see. A KB the user cannot see (any more), or an unknown one, is the empty list."""
+        query = (
+            select(Conversation)
+            .where(
+                Conversation.kb_id == kb_id,
+                Conversation.user_id == user.id,
+                Conversation.kb_id.in_(KnowledgeBaseRepository.visible_kb_ids(user)),
+            )
+            .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+        )
+        return list((await self.session.scalars(query)).all())
+
+    async def read_messages(self, conversation: Conversation) -> list[MessageOut]:
+        """Every message of the conversation in order, whatever its status, each with the sources its answer cites (the
+        context chunks that it does not cite are not shown), in one statement."""
+        rows = await self.session.execute(
+            select(Message, MessageSource)
+            .outerjoin(MessageSource, and_(MessageSource.message_id == Message.id, MessageSource.cited.is_(True)))
+            .where(Message.conversation_id == conversation.id)
+            .order_by(Message.created_at, Message.id, MessageSource.number)
+            .execution_options(populate_existing=True)
+        )
+        messages: dict[uuid.UUID, Message] = {}
+        shown: dict[uuid.UUID, list[SourceOut]] = {}
+        for message, source in rows.all():
+            messages[message.id] = message
+            shown.setdefault(message.id, [])
+            if source is not None:
+                shown[message.id].append(
+                    SourceOut(
+                        number=source.number,
+                        document_name=source.document_name,
+                        section_title=source.section_title,
+                        page_start=source.page_start,
+                        page_end=source.page_end,
+                    )
+                )
+        return [MessageOut.from_message(message, shown[message_id]) for message_id, message in messages.items()]
+
+    async def excerpt(self, conversation: Conversation, message_id: uuid.UUID, number: int) -> SourceExcerpt | None:
+        """The cited source `number` of the message `message_id` of the conversation, with the content of its chunk read
+        now, in one statement: the message must be one of the conversation, the source a cited one of that message, and
+        the chunk is looked up in the KB of the conversation only (an outer join: no chunk is `available=False`, with
+        the document name saved with the source). None for anything else. Nothing is written."""
+        row = (
+            await self.session.execute(
+                select(
+                    MessageSource.number,
+                    MessageSource.document_name,
+                    MessageSource.section_title,
+                    MessageSource.page_start,
+                    MessageSource.page_end,
+                    Chunk.content,
+                )
+                .select_from(MessageSource)
+                .join(Message, and_(Message.id == MessageSource.message_id, Message.conversation_id == conversation.id))
+                .outerjoin(Chunk, and_(Chunk.id == MessageSource.chunk_id, Chunk.kb_id == conversation.kb_id))
+                .where(MessageSource.message_id == message_id, MessageSource.number == number, MessageSource.cited)
+            )
+        ).first()
+        if row is None:
+            return None
+        return SourceExcerpt(
+            number=row.number,
+            document_name=row.document_name,
+            section_title=row.section_title,
+            page_start=row.page_start,
+            page_end=row.page_end,
+            available=row.content is not None,
+            content=row.content,
+        )
+
+    async def list_all(self, kb_id: uuid.UUID | None, user_id: uuid.UUID | None) -> list[AdminConversationRow]:
+        """Every conversation, of any user and KB, optionally of one KB and/or one user, by last activity (then id)
+        descending, in one statement, with the user name, the KB name and the number of messages (all of them). Only
+        for a caller that has checked the admin role."""
+        message_count = (
+            select(func.count(Message.id)).where(Message.conversation_id == Conversation.id).scalar_subquery()
+        )
+        query = (
+            select(
+                Conversation.id,
+                Conversation.kb_id,
+                Conversation.title,
+                Conversation.created_at,
+                Conversation.updated_at,
+                User.username,
+                KnowledgeBase.name.label("kb_name"),
+                message_count.label("message_count"),
+            )
+            .join(User, User.id == Conversation.user_id)
+            .join(KnowledgeBase, KnowledgeBase.id == Conversation.kb_id)
+            .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+        )
+        if kb_id is not None:
+            query = query.where(Conversation.kb_id == kb_id)
+        if user_id is not None:
+            query = query.where(Conversation.user_id == user_id)
+        return [AdminConversationRow(*row) for row in (await self.session.execute(query)).all()]
 
     async def history(self, conversation: Conversation, limit: int, before: Message | None = None) -> list[Message]:
         """The last `limit` messages of the conversation that are sent to the model, oldest first, only those before
@@ -195,6 +292,28 @@ class ConversationRepository:
         assert conversation is not None
         return conversation
 
+    async def rename(self, conversation: Conversation, title: str) -> Conversation | None:
+        """Set the title (already checked and trimmed by the caller) of the conversation; None if it is gone. A rename
+        is not an activity: `updated_at` is not touched, so the list keeps its order."""
+        renamed: Conversation | None = await self.session.scalar(
+            update(Conversation)
+            .where(Conversation.id == conversation.id)
+            .values(title=title)
+            .returning(Conversation)
+            .execution_options(populate_existing=True)
+        )
+        await self.session.commit()
+        return renamed
+
+    async def delete(self, conversation: Conversation) -> bool:
+        """Delete the conversation with its messages and sources (cascade); False if it was gone already. The statement
+        locks the conversation row and the cascade then the messages: the order of the module (lock order)."""
+        deleted = await self.session.scalar(
+            delete(Conversation).where(Conversation.id == conversation.id).returning(Conversation.id)
+        )
+        await self.session.commit()
+        return deleted is not None
+
     async def start_answer(self, conversation: Conversation, question: str) -> tuple[Message, Message]:
         """Save the question (COMPLETED) and its answer (PENDING, empty) in one transaction, and mark the activity of
         the conversation. `AnswerInProgress` if it already has a PENDING answer: nothing is saved then."""
@@ -231,7 +350,17 @@ class ConversationRepository:
         self, message_id: uuid.UUID, content: str, notice: str | None, sources: Sequence[tuple[int, Candidate, bool]]
     ) -> Message | None:
         """End a PENDING answer as COMPLETED with its text, its notice and all the sources of its context, in one
-        transaction. None, and nothing written, if the answer is not PENDING (conversation deleted, answer ended)."""
+        transaction. None, and nothing written, if the answer is not PENDING (conversation deleted, answer ended).
+        The conversation row is locked first (see the module: lock order)."""
+        conversation_id = await self.session.scalar(
+            select(Conversation.id)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .where(Message.id == message_id)
+            .with_for_update(key_share=True, of=Conversation)
+        )
+        if conversation_id is None:  # the conversation is gone (and with it the answer)
+            await self.session.commit()  # nothing was written: it only ends the transaction
+            return None
         message: Message | None = await self.session.scalar(
             update(Message)
             .where(Message.id == message_id, Message.status == "PENDING")
@@ -287,8 +416,15 @@ class ConversationRepository:
         conversation has no such message, `AnswerInProgress` if it has a PENDING answer (checked before `NotRetryable`:
         while an answer is in progress, any retry is refused for that reason; also when a simultaneous request got the
         unique index `messages_one_pending` first), `NotRetryable` otherwise (a question, a COMPLETED answer, a failed
-        answer that a later message follows). Nothing is written when it raises."""
+        answer that a later message follows). Nothing is written when it raises. The conversation row is locked first
+        (see the module: lock order); if it is gone the message is gone too (`MessageNotFound`)."""
         conversation_id = conversation.id
+        locked = await self.session.scalar(
+            select(Conversation.id).where(Conversation.id == conversation_id).with_for_update(key_share=True)
+        )
+        if locked is None:
+            await self.session.commit()  # nothing was written: it only ends the transaction
+            raise MessageNotFound
         later = aliased(Message)
         is_last = ~exists().where(
             later.conversation_id == Message.conversation_id,
