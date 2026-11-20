@@ -69,7 +69,7 @@ NOT_FOUND = {"error": {"code": "conversation_not_found", "message": "Conversatio
 CONVERSATION_KEYS = {"id", "kb_id", "title", "created_at", "updated_at"}
 DETAIL_KEYS = CONVERSATION_KEYS | {"messages", "read_only"}
 ADMIN_ROW_KEYS = CONVERSATION_KEYS | {"username", "kb_name", "message_count"}
-MESSAGE_KEYS = {"id", "role", "content", "status", "error_code", "notice", "created_at", "sources"}
+MESSAGE_KEYS = {"id", "role", "content", "status", "error_code", "notice", "created_at", "sources", "search_query"}
 SOURCE_KEYS = {"number", "document_name", "section_title", "page_start", "page_end"}
 SLOW = [delta_event("Inizio "), *([b": slow\n\n", 0.1] * 600)]  # a fragment, then a comment every 0.1 s for a minute
 
