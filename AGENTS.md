@@ -23,7 +23,7 @@ Nginx, Docker Compose; Ollama and Docling are external services.
   needed only on a shared local daemon, never in CI.
 - Each e2e test file uses its own Compose project name and host ports and tears down with `down -v`; wait for
   conditions, never sleep. Host ports in use: 18080, 18180, 18181, 18280, 18380, 18480, 18543, 18544, 18580, 18680,
-  18780, 18880; next free: 18980.
+  18780, 18880, 18980; next free: 19080.
 - E2E fakes: profiles of `backend/tests/e2e/compose.fakes.yaml`, `generation` (`E2E_GENERATION_SCRIPT`: a JSON list, a
   string is a fragment, a number a pause in s; fast unless the test is about timing), `rewrite`, `rerank` (`E2E_*` URLs); a
   fake of a profiled service of `compose.yaml` overrides it (same name and profile), so the real image never starts.
@@ -54,7 +54,7 @@ Nginx, Docker Compose; Ollama and Docling are external services.
   `docs/adr/ADR-004-rerank-rewrite.md` (reranker image, no new library); any other is asked first.
 - A behaviour change needs a test written from the ACs before the code; no task is done without a green `verify.py`.
 - Ambiguity or missing requirements: stop and ask, do not assume.
-- Behaviour changes: update the spec or the area page in `docs/system/` in the same PR.
+- Behaviour changes: update the spec or the area page in `docs/system/` and the guides `docs/guide/en|it/` in the same PR.
 - Choices and the merge question are asked as options to select (`sdd-start/references/interaction.md`).
 - Every access to a KB, its documents or conversations goes through `KnowledgeBaseRepository.list_for`/`get_for` or
   a query joined with `kb_members` in the same SQL statement, with an isolation test that calls it directly.
