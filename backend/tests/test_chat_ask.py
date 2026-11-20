@@ -621,7 +621,17 @@ async def test_the_events_are_conversation_one_delta_per_fragment_and_done(chat:
     )
     assert events[0][1] == {"conversation_id": str(conversation["id"]), "message_id": str(assistant["id"])}
     message = done_message(events)
-    assert set(message) == {"id", "role", "content", "status", "error_code", "notice", "created_at", "sources"}
+    assert set(message) == {
+        "id",
+        "role",
+        "content",
+        "status",
+        "error_code",
+        "notice",
+        "created_at",
+        "sources",
+        "search_query",
+    }
     assert message["id"] == str(assistant["id"])
     assert (message["role"], message["status"], message["error_code"], message["notice"]) == (
         "assistant",
