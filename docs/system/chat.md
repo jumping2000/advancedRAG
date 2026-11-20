@@ -1,7 +1,7 @@
 # Area: chat (hybrid retrieval, streamed answers, conversations)
 
 - Last aligned: 2026-11-20
-- Linked specs: SPEC-2026-11-17-fase-3-chat, SPEC-2026-11-20-fase-4-rerank-rewrite (in progress: T-02, the rewriting)
+- Linked specs: SPEC-2026-11-17-fase-3-chat, SPEC-2026-11-20-fase-4-rerank-rewrite (in progress: T-02, the rewriting; T-03, the reranker)
 
 ## Current behaviour
 A user opens a knowledge base (KB) they are assigned to, asks a question in Italian or English and reads the answer while
@@ -50,8 +50,8 @@ kept in `app.state`). Every statement that reads `chunks` carries, in the same S
    are plain text); a NUL is replaced by a space and a lone surrogate by `?` before the driver sees it;
 4. `fuse`: Reciprocal Rank Fusion, score(c) = sum of 1 / (`RRF_K` + rank(c)) over the lists the chunk is in; exact fractions
    decide ties (then the better vector rank, then the chunk id), and the stored score is the float of the fraction;
-5. the first `CHAT_CONTEXT_CHUNKS` (8) chunks are loaded (`load_candidates`, same SQL scope); if they are gone by now the answer
-   is completed with the notice `no_documents`.
+5. the first `CHAT_CONTEXT_CHUNKS` (8) chunks are loaded (`load_candidates`, same SQL scope; more with the reranker, below); if
+   they are gone by now the answer is completed with the notice `no_documents`.
 
 **The rewriting of the question (phase 4, `app/chat/rewrite.py`).** The answer reads the switches of `app_settings` once, right
 after its PENDING check, and keeps them to its end; the rewriting is active when `rewrite_enabled` is on and `REWRITE_BASE_URL`
@@ -71,6 +71,28 @@ over the whole request) or `invalid_response` (a body that is not a completion, 
 `restart_answer` puts `search_query` back to null. When the service was asked, one line is logged: `chat rewrite
 conversation=<id> message=<id> kb=<id> used=<true|false> reason=<reason|none> ms=<n>` (INFO when used, WARNING on a fallback),
 never a text. With the step off or not configured nothing changes from phase 3: no request, no line, `search_query` null.
+
+**The reranker (phase 4, `app/chat/rerank.py`).** It is active when `rerank_enabled` is on and `RERANK_BASE_URL` is set, read
+from the same switches of the answer (an answer started with it on uses it even if it is switched off meanwhile). Then the
+first `max(RERANK_CANDIDATES, CHAT_CONTEXT_CHUNKS)` chunks of the fusion are loaded, and when more than one of the first
+`RERANK_CANDIDATES` (20) is there, `RerankClient` posts their contents (without the document name), in the RRF order, with the
+searched question (the rewritten one when the rewriting was used) to `{RERANK_BASE_URL}/rerank`: with `RERANK_API=tei`
+`{"query", "texts", "truncate": true}` answered by `[{"index", "score"}]` (`truncate` makes text-embeddings-inference shorten a
+text over the limit of its model instead of refusing it); with `cohere` `{"model": RERANK_MODEL, "query", "documents",
+"top_n"}` answered by `{"results": [{"index", "relevance_score"}]}`; `Authorization: Bearer RERANK_API_KEY` when set. The final
+order (`rerank_order`) is the reranked candidates by score, highest first (equal scores keep the RRF order), then the other
+chunks in the RRF order; the context is its first `CHAT_CONTEXT_CHUNKS`, and the sources are saved in that order with their
+ranks and RRF score (the score of the reranker is not saved). The fallback is the RRF order, with the answer going on, with
+the reason `unreachable`, `http_error` (not 2xx; a redirect is never followed), `timeout` (one deadline of
+`RERANK_TIMEOUT_SECONDS` over the whole request) or `invalid_response` (a body of the wrong shape or over 1 MiB, an index that
+is not an integer, out of the candidates or repeated, a candidate without a score, a score that is not a finite number: NaN,
+Infinity, a boolean, a numeric string). The reranker is waited for with no database session open, in the task of the answer, so
+deleting the conversation stops it like the other steps. When the reranker was asked one line is logged: `chat rerank
+conversation=<id> message=<id> kb=<id> used=<true|false> reason=<reason|none> candidates=<n> ms=<n>` (INFO when used,
+WARNING on a fallback), never a text or a score. With the step off, not configured, or a single candidate, nothing is sent and
+no line is logged. The destinations of the chat content are then: the question and the history to `REWRITE_BASE_URL` (rewriting
+active), the searched question to `OLLAMA_BASE_URL`, the searched question and the candidates to `RERANK_BASE_URL` (reranker
+active), the context and the question to `GENERATION_BASE_URL` (`tests/test_chat_steps_privacy.py`).
 
 **The context** (`build_messages`): one `system` message (`SYSTEM_INSTRUCTIONS`, in English: use only the sources, say so when
 they do not contain the answer, answer in the language of the question, cite with `[n]`, one number per bracket pair, the
@@ -441,7 +463,8 @@ erDiagram
   tables.
 - Automated tests never call the real Ollama, Docling or generation provider: they use the fakes of `backend/tests/fakes/`.
 - Logs (REQ-102): ids, counts, durations, codes and the type of an exception; never a question, answer, title, chunk, file name,
-  vector or the key (`tests/test_chat_logging_privacy.py`).
+  vector or the key (`tests/test_chat_logging_privacy.py`); in phase 4 never the rewritten question, a text sent to the reranker,
+  a score of the reranker or `REWRITE_API_KEY`/`RERANK_API_KEY` (`tests/test_chat_steps_privacy.py`).
 - The delete-before-registration window (a DELETE arriving before the answer task registered itself) is closed: the task checks
   `is_pending` first and the route cancels twice.
 
@@ -472,7 +495,7 @@ erDiagram
   closed; (d) a list request already in flight when a delete succeeds can bring the deleted row back until the next load.
 - `spec.md` still says `@@@` for the BM25 operator in its Constraints text; the code uses `|||` (see The retrieval above). This
   page is the source of truth: a task does not change the spec.
-- No reranker yet (phase 4, T-03), no evaluation, no export, search or paging of the conversations, no feedback on the
+- No evaluation, no export, search or paging of the conversations, no feedback on the
   answers, no provider other than OpenAI-compatible (spec non-scope).
 
 ## Characterization tests
@@ -485,6 +508,7 @@ erDiagram
 - Backend: [routes.py](../../backend/app/chat/routes.py), [service.py](../../backend/app/chat/service.py),
   [repository.py](../../backend/app/chat/repository.py), [retrieval.py](../../backend/app/chat/retrieval.py),
   [prompt.py](../../backend/app/chat/prompt.py), [generation.py](../../backend/app/chat/generation.py),
+  [rewrite.py](../../backend/app/chat/rewrite.py), [rerank.py](../../backend/app/chat/rerank.py),
   [schemas.py](../../backend/app/chat/schemas.py), [health.py](../../backend/app/api/health.py),
   [run.py](../../backend/app/run.py).
 - Data: [0005_conversations.py](../../backend/migrations/versions/0005_conversations.py).
@@ -494,6 +518,7 @@ erDiagram
   [App.tsx](../../frontend/src/app/App.tsx).
 - Tests: `backend/tests/` (`test_generation_client.py`, `test_retrieval.py`, `test_rrf.py`, `test_prompt.py`, `test_chat_ask.py`,
   `test_chat_streaming.py`, `test_chat_errors.py`, `test_chat_retry.py`, `test_conversations.py`,
-  `test_conversation_isolation.py`, `test_chat_sources.py`, `test_chat_logging_privacy.py`), `backend/tests/e2e/`
+  `test_conversation_isolation.py`, `test_chat_sources.py`, `test_chat_logging_privacy.py`; phase 4: `test_rewrite_client.py`,
+  `test_chat_rewrite.py`, `test_rerank_client.py`, `test_chat_rerank.py`, `test_chat_steps_privacy.py`), `backend/tests/e2e/`
   (`test_chat_ui.py`, `test_conversations_ui.py`), `frontend/src/pages/ChatPage.test.tsx`,
   `frontend/src/pages/admin/ConversationsPage.test.tsx`.
