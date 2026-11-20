@@ -144,6 +144,27 @@ services:
       timeout: 5s
       retries: 20
 
+  # The reranker (phase 4, ADR-004), optional: only with `docker compose --profile rerank up --build`; on a NVIDIA GPU
+  # also `-f compose.rerank-gpu.yaml`, which replaces the image (one reranker at a time). Hugging Face
+  # text-embeddings-inference on port 80 of the Compose network, never published on the host: the backend reaches it at
+  # RERANK_BASE_URL=http://reranker (RERANK_API=tei). The model is downloaded from Hugging Face at the first start into
+  # the `reranker-models` volume; until then the service is not healthy and the chat keeps the RRF order.
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
+    profiles: ["rerank"]
+    environment:
+      MODEL_ID: ${RERANK_COMPOSE_MODEL:-BAAI/bge-reranker-v2-m3}
+    volumes:
+      - reranker-models:/data
+    healthcheck:
+      # The image has curl; the first start waits for the download of the model (start_period)
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30m
+
 volumes:
   pgdata:
   uploads:
+  reranker-models:

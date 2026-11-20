@@ -24,6 +24,19 @@ Alembic migrations (`fileConfig(..., disable_existing_loggers=False)` in `migrat
 the process does not silence the loggers created before), creates the first admin from `ADMIN_USERNAME`/`ADMIN_PASSWORD` when no active admin exists, then
 starts uvicorn. Ollama and Docling are external: `GET /api/health` reports them but they never block the startup.
 
+The Compose has an optional sixth service, `reranker` (phase 4, T-04, ADR-004), only in the profile `rerank`: without
+`--profile rerank` the stack is the five services above. It runs Hugging Face text-embeddings-inference, CPU image
+`ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4`, with the model `MODEL_ID` = `RERANK_COMPOSE_MODEL` (default
+`BAAI/bge-reranker-v2-m3`), downloaded from Hugging Face at its first start into the `reranker-models` volume (mounted at
+`/data`). It listens on port 80 of the Compose network only (no host port): the backend uses it with
+`RERANK_BASE_URL=http://reranker` and `RERANK_API=tei`, which `.env` must set (the Compose does not set them). Its health
+check is `curl` on `/health`, with a `start_period` of 30 minutes for the download; until the model is ready, and
+always without access to Hugging Face, the service is not healthy, the chat keeps the RRF order and `GET /api/health`
+shows `rerank` as `unreachable`. No other service waits for it. On a NVIDIA GPU (NVIDIA Container Toolkit on the host)
+`-f compose.rerank-gpu.yaml` replaces the image with `ghcr.io/huggingface/text-embeddings-inference:1.9.4` (Ampere and
+Ada Lovelace; other families change the tag in that file) and reserves one GPU, so the service stays one; the file
+alone, without the profile, starts no reranker.
+
 The worker (`app/worker.py`) runs the jobs of the RQ queue `ingestion` one at a time with `rq.SimpleWorker` (no fork per
 job). While it runs, a daemon thread writes the Redis key `ingestion:worker:alive:{hostname}` (value `1`, expiry 30
 seconds) every 10 seconds; `python -m app.worker --healthcheck`, the Compose health check, exits 0 if the key of its own
@@ -458,6 +471,7 @@ The complete list, with the notes for phase 3, is in [ingestion.md](ingestion.md
 - Spec and plan: [spec.md](../specs/2026-11-06-fase-1-fondazioni/spec.md),
   [plan.md](../specs/2026-11-06-fase-1-fondazioni/plan.md); toolchain: [ADR-001](../adr/ADR-001-toolchain-fase-1.md).
 - Stack: [compose.yaml](../../compose.yaml), [compose.tls.yaml](../../compose.tls.yaml),
+  [compose.rerank-gpu.yaml](../../compose.rerank-gpu.yaml) (reranker on GPU, phase 4: [ADR-004](../adr/ADR-004-rerank-rewrite.md)),
   [nginx/entrypoint-tls.sh](../../nginx/entrypoint-tls.sh), [backend/app/run.py](../../backend/app/run.py),
   [backend/app/api/health.py](../../backend/app/api/health.py); the switches of phase 4:
   [app_settings/routes.py](../../backend/app/app_settings/routes.py),
