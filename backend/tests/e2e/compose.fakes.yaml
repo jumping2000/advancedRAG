@@ -8,6 +8,11 @@
 # The chat UI test (test_chat_ui.py) starts the profile `generation` and sets E2E_GENERATION_URL: the service
 # `generation` is then the provider of the backend, a fake that streams the steps of E2E_GENERATION_SCRIPT, a JSON list
 # where a string is a fragment of text and a number is a pause in seconds before the next one.
+# The settings UI test (test_settings_ui.py) also starts the profiles `rewrite` and `rerank` and sets E2E_REWRITE_URL,
+# E2E_RERANK_URL and E2E_RERANK_API: the service `rewrite` is then the rewriting service of the backend, a fake that
+# answers every request with E2E_REWRITE_ANSWER, and the service `reranker` of compose.yaml (profile `rerank`) is replaced
+# by a fake reranker in the `tei` format, on port 80 like the real one, that scores a text by the first key of the JSON
+# object E2E_RERANK_SCORES that it contains. Without these variables the backend keeps the fake Ollama's `/v1/models`.
 services:
   fakes:
     image: python:3.12.16-slim
@@ -30,12 +35,13 @@ services:
       DOCLING_BASE_URL: http://fakes:5001
       GENERATION_BASE_URL: ${E2E_GENERATION_URL:-http://fakes:11434/v1}
       GENERATION_MODEL: fake-model
-      # Phase 4: the rewriting service and the reranker (cohere format, checked with GET /models) are the fake Ollama's
-      # `/v1/models` too, so that their checks of GET /api/health are `ok`; the switches stay off, nothing else is sent
-      REWRITE_BASE_URL: http://fakes:11434/v1
+      # Phase 4: by default the rewriting service and the reranker (cohere format, checked with GET /models) are the fake
+      # Ollama's `/v1/models` too, so that their checks of GET /api/health are `ok`; the switches stay off, nothing else
+      # is sent. The profiles `rewrite` and `rerank` below replace them through the E2E_* variables.
+      REWRITE_BASE_URL: ${E2E_REWRITE_URL:-http://fakes:11434/v1}
       REWRITE_MODEL: fake-model
-      RERANK_BASE_URL: http://fakes:11434/v1
-      RERANK_API: cohere
+      RERANK_BASE_URL: ${E2E_RERANK_URL:-http://fakes:11434/v1}
+      RERANK_API: ${E2E_RERANK_API:-cohere}
       RERANK_MODEL: fake-model
     depends_on:
       fakes:
@@ -65,6 +71,55 @@ services:
       interval: 2s
       timeout: 6s
       retries: 30
+
+  rewrite:
+    profiles: ["rewrite"]
+    image: python:3.12.16-slim
+    working_dir: /app
+    command:
+      - python
+      - -c
+      - |
+        import os
+        from tests.fakes.services import FakeRewriteProvider, _RewriteHandler, _Server
+        provider = FakeRewriteProvider(answer=os.environ["ANSWER"])
+        _Server(("0.0.0.0", 8080), _RewriteHandler, provider).serve_forever()
+    environment:
+      PYTHONUNBUFFERED: "1"
+      ANSWER: '${E2E_REWRITE_ANSWER:-Domanda riscritta}'
+    volumes:
+      - ./backend/tests/fakes:/app/tests/fakes:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/v1/models', timeout=5)"]
+      interval: 2s
+      timeout: 6s
+      retries: 30
+
+  # The fake in place of the text-embeddings-inference image of compose.yaml (same service, same profile): nothing is
+  # downloaded. It keeps the base service's environment and volume, which it does not read.
+  reranker:
+    profiles: ["rerank"]
+    image: python:3.12.16-slim
+    working_dir: /app
+    command:
+      - python
+      - -c
+      - |
+        import json, os
+        from tests.fakes.services import FakeReranker, _RerankHandler, _Server
+        reranker = FakeReranker(api="tei", scores=json.loads(os.environ.get("SCORES") or "{}"))
+        _Server(("0.0.0.0", 80), _RerankHandler, reranker).serve_forever()
+    environment:
+      PYTHONUNBUFFERED: "1"
+      SCORES: '${E2E_RERANK_SCORES:-}'
+    volumes:
+      - ./backend/tests/fakes:/app/tests/fakes:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1/health', timeout=5)"]
+      interval: 2s
+      timeout: 6s
+      retries: 30
+      start_period: 0s
 
   worker:
     environment:
