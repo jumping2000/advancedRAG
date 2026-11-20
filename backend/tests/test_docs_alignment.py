@@ -14,7 +14,6 @@ other.
 from __future__ import annotations
 
 import os
-import posixpath
 import re
 from collections import Counter
 from pathlib import Path
@@ -160,7 +159,7 @@ def link_problems(root: Path) -> list[str]:
     problems = []
     for first, second in twin_pairs(root):
         for path, twin in ((first, second), (second, first)):
-            target = posixpath.relpath(twin.as_posix(), path.parent.as_posix())
+            target = os.path.relpath(twin, path.parent).replace(os.sep, "/")
             line = first_line_after_title(read_text(path))
             if f"]({target})" not in line:
                 problems.append(
@@ -327,7 +326,7 @@ def test_AC_011_a_variable_listed_twice_or_out_of_order_fails(tmp_path: Path) ->
 
 def test_AC_011_a_guide_with_windows_line_ends_and_a_bom_is_read_like_any_other(tmp_path: Path) -> None:
     root = build_tree(tmp_path)
-    windows = "﻿" + guide_text("en").replace("\n", "\r\n")
+    windows = "\ufeff" + guide_text("en").replace("\n", "\r\n")
     write(guide_path("en", INSTALLATION, root), windows)
 
     for lang in LANGS:
@@ -508,7 +507,7 @@ def test_AC_012_an_image_that_is_a_url_is_not_looked_up_on_disk(tmp_path: Path) 
 
 def test_AC_012_read_text_strips_the_bom_and_normalizes_the_line_ends(tmp_path: Path) -> None:
     path = tmp_path / "windows.md"
-    path.write_bytes("﻿# Titolo\r\n\r\nPerché «sì»\r\n".encode())
+    path.write_bytes("\ufeff# Titolo\r\n\r\nPerché «sì»\r\n".encode())
 
     assert read_text(path) == "# Titolo\n\nPerché «sì»\n"
 
