@@ -561,6 +561,154 @@ def fake_generation_provider(**modes: Any) -> Iterator[FakeGenerationProvider]:
         server.server_close()
 
 
+# Fake rewrite provider (phase 4, T-02) -----------------------------------------------------------------------------
+# An OpenAI-compatible API without streaming (`POST /v1/chat/completions` with `stream: false`), for the rewriting of
+# the question. `python -m tests.fakes.services` (main below) does not serve it.
+
+
+def completion_body(content: Any) -> dict[str, Any]:
+    """The body of a `chat.completion` whose first choice has this `content` (any JSON value)."""
+    return {
+        "id": "chatcmpl-fake-rewrite",
+        "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+    }
+
+
+@dataclass
+class FakeRewriteProvider:
+    # The base URL to configure: it ends in `/v1`, so that the paths of the client are tested against a base path.
+    url: str = ""
+    # Every request received (completion and models), in arrival order; the type is the one of the generation fake.
+    requests: list[GenerationRequest] = field(default_factory=list)
+    # The `content` of the answer to every completion request (`answers` replaces it when set).
+    answer: str = "Domanda riscritta"
+    # The contents of the answers in order, one per completion request (the last one is repeated when they run out).
+    answers: list[str] | None = None
+    # Answer this status with a JSON error body instead.
+    fail_status: int | None = None
+    # Answer 200 with exactly this JSON value as the body (serialized with escapes: a NUL or a lone surrogate inside a
+    # string travels as `\\u0000` or `\\ud800`), instead of a completion.
+    json_body: Any = None
+    # Answer 200 with exactly these bytes as the body (`Content-Type: application/json`), instead of a completion.
+    raw_body: bytes | None = None
+    # Close the connection without answering the completion request.
+    drop_connection: bool = False
+    # Answer every request with `redirect_status` and this `Location` instead.
+    redirect_to: str | None = None
+    redirect_status: int = 302
+    # Wait this long (or until `release` is set) before answering the completion request.
+    delay_seconds: float = 0.0
+    # Send the status and the headers at once, then wait this long (or until `release` is set) before the body.
+    body_delay_seconds: float = 0.0
+    # `GET /v1/models`: the status of the answer.
+    models_status: int = 200
+    release: threading.Event = field(default_factory=threading.Event, repr=False)
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def completions(self) -> list[GenerationRequest]:
+        return [request for request in self.requests if request.path.endswith("/chat/completions")]
+
+    def next_answer(self) -> str:
+        """The content for the completion request just recorded."""
+        if self.answers is None:
+            return self.answer
+        number = len(self.completions())
+        return self.answers[min(number, len(self.answers)) - 1] if self.answers else ""
+
+
+class _RewriteHandler(_Quiet):
+    server: _Server
+    protocol_version = "HTTP/1.1"
+
+    def _record(self, body: Any) -> FakeRewriteProvider:
+        state: FakeRewriteProvider = self.server.state
+        with state.lock:
+            state.requests.append(GenerationRequest(self.command, self.path, self.headers.get("Authorization"), body))
+        return state
+
+    def _send(
+        self, status: int, payload: bytes, body_delay: float = 0.0, release: threading.Event | None = None
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            if body_delay and release is not None:
+                self.wfile.flush()
+                release.wait(body_delay)
+            self.wfile.write(payload)
+        except OSError:  # the client hung up
+            return
+
+    def _redirect(self, state: FakeRewriteProvider) -> None:
+        self.send_response(state.redirect_status)
+        self.send_header("Location", str(state.redirect_to))
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+    def do_GET(self) -> None:  # noqa: N802 (http.server API)
+        state = self._record(None)
+        if state.redirect_to is not None:
+            self._redirect(state)
+        elif self.path != "/v1/models":
+            self._send(404, b'{"error": "not found"}')
+        else:
+            self._send(state.models_status, json.dumps({"object": "list", "data": [{"id": "fake-rewrite"}]}).encode())
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server API)
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        try:
+            body: Any = json.loads(raw)
+        except ValueError:
+            body = None
+        state = self._record(body)
+        if state.redirect_to is not None:
+            self._redirect(state)
+            return
+        if self.path != "/v1/chat/completions":
+            self._send(404, b'{"error": "not found"}')
+            return
+        if state.drop_connection:
+            self.close_connection = True
+            self.connection.shutdown(socket.SHUT_RDWR)
+            return
+        if state.delay_seconds:
+            state.release.wait(state.delay_seconds)
+        if state.fail_status is not None:
+            payload = json.dumps({"error": {"message": "failure on purpose", "type": "fake_error"}}).encode()
+            self._send(state.fail_status, payload)
+            return
+        if state.raw_body is not None:
+            payload = state.raw_body
+        elif state.json_body is not None:
+            payload = json.dumps(state.json_body).encode("utf-8")
+        else:
+            payload = json.dumps(completion_body(state.next_answer())).encode("utf-8")
+        self._send(200, payload, state.body_delay_seconds, state.release)
+
+
+@contextmanager
+def fake_rewrite_provider(**modes: Any) -> Iterator[FakeRewriteProvider]:
+    """A fake OpenAI-compatible rewriting provider (no streaming) on a free local port; `modes` set the fields of
+    FakeRewriteProvider."""
+    state = FakeRewriteProvider(**modes)
+    server = _Server(("127.0.0.1", 0), _RewriteHandler, state)
+    state.url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    _start(server)
+    try:
+        yield state
+    finally:
+        state.release.set()
+        server.shutdown()
+        server.server_close()
+
+
 def main() -> None:
     dimensions = int(os.environ.get("EMBEDDING_DIMENSIONS") or DEFAULT_DIMENSIONS)
     servers = [
