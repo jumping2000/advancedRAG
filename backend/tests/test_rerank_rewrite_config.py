@@ -212,8 +212,8 @@ def test_AC_001_the_rewrite_key_is_never_shown_by_the_settings_nor_by_a_refusal(
 @pytest.mark.parametrize(
     ("overrides", "named"),
     [
-        pytest.param({"rerank_api": "xyz"}, "RERANK_API", id="api-xyz"),
-        pytest.param({"rerank_api": "TEI-or-cohere"}, "RERANK_API", id="api-other"),
+        pytest.param({"rerank_base_url": RERANK_URL, "rerank_api": "xyz"}, "RERANK_API", id="api-xyz"),
+        pytest.param({"rerank_base_url": RERANK_URL, "rerank_api": "TEI-or-cohere"}, "RERANK_API", id="api-other"),
         pytest.param(
             {"rerank_base_url": RERANK_URL, "rerank_api": "cohere", "rerank_model": ""},
             "RERANK_MODEL",
@@ -225,10 +225,24 @@ def test_AC_001_the_rewrite_key_is_never_shown_by_the_settings_nor_by_a_refusal(
             id="cohere-blank",
         ),
         pytest.param({"rerank_base_url": RERANK_URL, "rerank_api": "cohere"}, "RERANK_MODEL", id="cohere-no-model"),
-        pytest.param({"rerank_candidates": 0, "retrieval_candidates": 50}, "RERANK_CANDIDATES", id="candidates-0"),
-        pytest.param({"rerank_candidates": 51, "retrieval_candidates": 50}, "RERANK_CANDIDATES", id="candidates-51"),
-        pytest.param({"rerank_candidates": -3}, "RERANK_CANDIDATES", id="candidates-negative"),
-        pytest.param({"rerank_candidates": 11, "retrieval_candidates": 10}, "RERANK_CANDIDATES", id="above-retrieval"),
+        pytest.param(
+            {"rerank_base_url": RERANK_URL, "rerank_candidates": 0, "retrieval_candidates": 50},
+            "RERANK_CANDIDATES",
+            id="candidates-0",
+        ),
+        pytest.param(
+            {"rerank_base_url": RERANK_URL, "rerank_candidates": 51, "retrieval_candidates": 50},
+            "RERANK_CANDIDATES",
+            id="candidates-51",
+        ),
+        pytest.param(
+            {"rerank_base_url": RERANK_URL, "rerank_candidates": -3}, "RERANK_CANDIDATES", id="candidates-negative"
+        ),
+        pytest.param(
+            {"rerank_base_url": RERANK_URL, "rerank_candidates": 11, "retrieval_candidates": 10},
+            "RERANK_CANDIDATES",
+            id="above-retrieval",
+        ),
         pytest.param({"rerank_timeout_seconds": 0}, "RERANK_TIMEOUT_SECONDS", id="timeout-0"),
         pytest.param({"rerank_timeout_seconds": -1}, "RERANK_TIMEOUT_SECONDS", id="timeout-negative"),
         pytest.param({"rerank_base_url": "ftp://x"}, "RERANK_BASE_URL", id="url-ftp"),
@@ -245,13 +259,19 @@ def test_AC_002_a_reranker_value_that_is_not_valid_is_refused_naming_the_variabl
 @pytest.mark.parametrize(
     ("variables", "named"),
     [
-        pytest.param({"RERANK_API": "xyz"}, "RERANK_API", id="api-xyz"),
+        pytest.param({"RERANK_BASE_URL": RERANK_URL, "RERANK_API": "xyz"}, "RERANK_API", id="api-xyz"),
         pytest.param(
             {"RERANK_BASE_URL": RERANK_URL, "RERANK_API": "cohere", "RERANK_MODEL": ""}, "RERANK_MODEL", id="cohere"
         ),
-        pytest.param({"RERANK_CANDIDATES": "0", "RETRIEVAL_CANDIDATES": "50"}, "RERANK_CANDIDATES", id="candidates-0"),
         pytest.param(
-            {"RERANK_CANDIDATES": "51", "RETRIEVAL_CANDIDATES": "50"}, "RERANK_CANDIDATES", id="candidates-51"
+            {"RERANK_BASE_URL": RERANK_URL, "RERANK_CANDIDATES": "0", "RETRIEVAL_CANDIDATES": "50"},
+            "RERANK_CANDIDATES",
+            id="candidates-0",
+        ),
+        pytest.param(
+            {"RERANK_BASE_URL": RERANK_URL, "RERANK_CANDIDATES": "51", "RETRIEVAL_CANDIDATES": "50"},
+            "RERANK_CANDIDATES",
+            id="candidates-51",
         ),
         pytest.param({"RERANK_TIMEOUT_SECONDS": "0"}, "RERANK_TIMEOUT_SECONDS", id="timeout-0"),
         pytest.param({"RERANK_BASE_URL": "ftp://x"}, "RERANK_BASE_URL", id="url-ftp"),
@@ -378,3 +398,107 @@ def test_settings_fields_match_the_plan() -> None:
         "rerank_candidates",
         "rerank_timeout_seconds",
     } <= fields
+
+
+# Revision of AC-002 (spec revision after the T-01 review): the reranker values are checked only with RERANK_BASE_URL
+# set, so that a configuration of phase 3 starts as before; the two timeouts must be finite numbers above 0, always.
+
+
+@pytest.mark.parametrize(
+    ("overrides", "named"),
+    [
+        pytest.param({"rerank_timeout_seconds": float("inf")}, "RERANK_TIMEOUT_SECONDS", id="rerank-inf"),
+        pytest.param({"rerank_timeout_seconds": float("nan")}, "RERANK_TIMEOUT_SECONDS", id="rerank-nan"),
+        pytest.param(
+            {"rerank_base_url": RERANK_URL, "rerank_timeout_seconds": float("inf")},
+            "RERANK_TIMEOUT_SECONDS",
+            id="rerank-inf-configured",
+        ),
+        pytest.param({"rewrite_timeout_seconds": float("nan")}, "REWRITE_TIMEOUT_SECONDS", id="rewrite-nan"),
+        pytest.param({"rewrite_timeout_seconds": float("inf")}, "REWRITE_TIMEOUT_SECONDS", id="rewrite-inf"),
+        pytest.param({"rewrite_timeout_seconds": float("-inf")}, "REWRITE_TIMEOUT_SECONDS", id="rewrite-minus-inf"),
+        pytest.param(
+            {"rewrite_base_url": REWRITE_URL, "rewrite_model": "m", "rewrite_timeout_seconds": float("nan")},
+            "REWRITE_TIMEOUT_SECONDS",
+            id="rewrite-nan-configured",
+        ),
+    ],
+)
+def test_AC_002_a_timeout_that_is_not_a_finite_number_is_refused_naming_the_variable(
+    overrides: dict[str, Any], named: str
+) -> None:
+    assert named in refusal(**overrides)
+
+
+@pytest.mark.parametrize(
+    ("variables", "named"),
+    [
+        pytest.param({"RERANK_TIMEOUT_SECONDS": "inf"}, "RERANK_TIMEOUT_SECONDS", id="rerank-inf"),
+        pytest.param(
+            {"RERANK_BASE_URL": RERANK_URL, "RERANK_TIMEOUT_SECONDS": "inf"},
+            "RERANK_TIMEOUT_SECONDS",
+            id="rerank-inf-configured",
+        ),
+        pytest.param({"RERANK_TIMEOUT_SECONDS": "nan"}, "RERANK_TIMEOUT_SECONDS", id="rerank-nan"),
+        pytest.param({"REWRITE_TIMEOUT_SECONDS": "nan"}, "REWRITE_TIMEOUT_SECONDS", id="rewrite-nan"),
+        pytest.param({"REWRITE_TIMEOUT_SECONDS": "inf"}, "REWRITE_TIMEOUT_SECONDS", id="rewrite-inf"),
+        pytest.param({"REWRITE_TIMEOUT_SECONDS": "-inf"}, "REWRITE_TIMEOUT_SECONDS", id="rewrite-minus-inf"),
+    ],
+)
+def test_AC_002_the_backend_does_not_start_with_a_timeout_that_is_not_finite(
+    backend_env: list[str], monkeypatch: pytest.MonkeyPatch, variables: dict[str, str], named: str
+) -> None:
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+
+    assert named in refused_start(backend_env)
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        pytest.param({"RETRIEVAL_CANDIDATES": "10"}, id="retrieval-10-default-candidates-20"),
+        pytest.param({"RERANK_API": "cohere", "RERANK_MODEL": ""}, id="cohere-without-model"),
+        pytest.param({"RERANK_API": "cohere"}, id="cohere-model-unset"),
+        pytest.param({"RERANK_API": "xyz"}, id="api-xyz"),
+        pytest.param({"RERANK_CANDIDATES": "0"}, id="candidates-0"),
+        pytest.param({"RERANK_CANDIDATES": "51", "RETRIEVAL_CANDIDATES": "50"}, id="candidates-51"),
+        pytest.param({"RERANK_BASE_URL": "", "RETRIEVAL_CANDIDATES": "10"}, id="empty-url-retrieval-10"),
+        pytest.param({"RERANK_BASE_URL": "   ", "RERANK_API": "cohere", "RERANK_MODEL": ""}, id="blank-url-cohere"),
+    ],
+)
+def test_AC_002_without_a_reranker_base_url_its_other_values_are_not_checked_and_the_backend_starts(
+    backend_env: list[str], monkeypatch: pytest.MonkeyPatch, variables: dict[str, str]
+) -> None:
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+
+    start(backend_env)
+
+    assert backend_env == ["migrate"]
+    assert get_settings().rerank_configured is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"retrieval_candidates": 10}, id="retrieval-10-default-candidates-20"),
+        pytest.param({"rerank_api": "cohere", "rerank_model": ""}, id="cohere-without-model"),
+        pytest.param({"rerank_api": "xyz"}, id="api-xyz"),
+        pytest.param({"rerank_candidates": 0}, id="candidates-0"),
+        pytest.param({"rerank_candidates": 51, "retrieval_candidates": 50}, id="candidates-51"),
+    ],
+)
+def test_AC_002_without_a_reranker_base_url_the_settings_are_accepted_and_not_configured(
+    overrides: dict[str, Any],
+) -> None:
+    settings = make_settings(**overrides)
+
+    assert settings.rerank_configured is False
+    assert settings.rerank_api in ("tei", "cohere")  # the value read by the code is always one of the two
+
+
+def test_AC_002_with_a_reranker_base_url_the_phase_3_retrieval_of_10_needs_rerank_candidates_within_it() -> None:
+    assert "RERANK_CANDIDATES" in refusal(rerank_base_url=RERANK_URL, retrieval_candidates=10)
+    settings = make_settings(rerank_base_url=RERANK_URL, retrieval_candidates=10, rerank_candidates=10)
+    assert settings.rerank_configured is True
