@@ -1,7 +1,8 @@
 # Area: fondazioni (stack, access, users, knowledge bases)
 
-- Last aligned: 2026-11-18
-- Linked specs: SPEC-2026-11-06-fase-1-fondazioni, SPEC-2026-11-07-fase-2-ingestion, SPEC-2026-11-17-fase-3-chat
+- Last aligned: 2026-11-20
+- Linked specs: SPEC-2026-11-06-fase-1-fondazioni, SPEC-2026-11-07-fase-2-ingestion, SPEC-2026-11-17-fase-3-chat,
+  SPEC-2026-11-20-fase-4-rerank-rewrite
 
 ## Current behaviour
 The platform runs as a Docker Compose stack of five services: `nginx` (the only one with a host port, `HTTP_PORT`,
@@ -130,11 +131,24 @@ user's id in the same SQL query: a user lists and opens only the assigned KBs, a
 exist or has an id that is not a UUID gets the same 404 `kb_not_found`. The UI (Italian or English: browser language
 first, then the language saved in the profile) has the login page, the KB list as home page ("Le tue knowledge base"
 for a user, "Tutte le knowledge base" for the admin) and, for the admin, the Users, Knowledge Base, (phase 2, T-07)
-Documents and (phase 3, T-07) Conversations pages; a `user` sees none of the admin menus. Since phase 3 the opened KB under
+Documents, (phase 3, T-07) Conversations and (phase 4, T-05) Settings pages; a `user` sees none of the admin menus. Since phase 3 the opened KB under
 `/kbs/{id}` is the chat page (`ChatPage`: the KB name and description stay in the header, the own conversations on the left,
 the messages and the question field on the right). The Documents page is described in [ingestion.md](ingestion.md); the chat
 page, the Conversations page and everything behind them (retrieval, streaming, conversations) in [chat.md](chat.md). The member picker of the Knowledge Base page offers only
 active users; an inactive user already assigned stays listed, marked as deactivated.
+
+The Settings page (phase 4, `/admin/settings`, `SettingsPage`, menu "Impostazioni"/"Settings", the last admin entry; admin
+only like the other admin pages: a `user` has no link and the route sends them to `/`, no session to `/login`) reads `GET
+/api/admin/settings` and shows two switches (`<input type="checkbox" role="switch">`), «Riscrittura della domanda» and
+«Reranker», each with a line of help, in the saved state. Each change is saved at once with `PUT /api/admin/settings` and
+only its own field (`rewrite_enabled` or `rerank_enabled`); there is no save button and no "saved" message. The switch shows
+the new state while its save is in flight (it is disabled meanwhile) and then the state the backend returned; a refused
+save puts it back to the state before the change and shows the reason (`settings.errors.<code>`, then `errors.<code>`, then
+the generic error: 409 `service_not_configured` is «Il servizio di questo passo non è configurato.», no connection is
+`errors.network_error`). The switch of a step whose service is not configured (`configured: false`) is disabled, still in
+its saved state, with «Non configurato» as part of its accessible description. Load and save errors are plain paragraphs,
+not `role="alert"` (the header's language selector owns the alert). The chat side of the two steps is in
+[chat.md](chat.md).
 
 ## Interfaces
 Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; the UI translates the `code`.
@@ -190,7 +204,7 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   `DOCLING_TIMEOUT_SECONDS` (600, above 0), `INGESTION_MAX_ATTEMPTS` (3, at least 1), `INGESTION_RETRY_BACKOFF_SECONDS`
   (10, 0 or more), `MIN_EXTRACTED_CHARS` (50, 0 or more), `FAILED_ORIGINAL_RETENTION_DAYS` (7, from 1 to 3650: how long the original of a FAILED
   document is kept after it failed) and `DOCLING_INCLUDE_IMAGES` (false: Docling is not asked to
-  extract images; an interface switch for it is deferred to the settings page of phase 4).
+  extract images; the Settings page of phase 4 has no switch for it: it stays in `.env`).
 - Generation provider (phase 3, T-01; backend only, the worker does not get them): `GENERATION_BASE_URL` (empty: not
   configured, the backend starts and health shows `not_configured`; otherwise the base of an OpenAI-compatible API, an
   `http` or `https` URL with a host, for example `https://api.openai.com/v1` or `http://ollama:11434/v1`, with or
@@ -500,9 +514,11 @@ The complete list, with the notes for phase 3, is in [ingestion.md](ingestion.md
   [UsersPage.tsx](../../frontend/src/pages/admin/UsersPage.tsx),
   [DocumentsPage.tsx](../../frontend/src/pages/admin/DocumentsPage.tsx) (phase 2, T-07),
   [ChatPage.tsx](../../frontend/src/pages/ChatPage.tsx) and
-  [ConversationsPage.tsx](../../frontend/src/pages/admin/ConversationsPage.tsx) (phase 3, [chat.md](chat.md)).
+  [ConversationsPage.tsx](../../frontend/src/pages/admin/ConversationsPage.tsx) (phase 3, [chat.md](chat.md)),
+  [SettingsPage.tsx](../../frontend/src/pages/admin/SettingsPage.tsx) (phase 4).
 - Tests: `backend/tests/` (`test_isolation.py`, `test_knowledge_bases.py`, `test_users.py`, `test_auth.py`, ...),
-  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`, `test_documents_ui.py`, `test_chat_ui.py`, `test_conversations_ui.py`), `frontend/src/**/*.test.tsx`;
+  `backend/tests/e2e/` (`test_stack.py`, `test_tls.py`, `test_admin_flow.py`, `test_ingestion_e2e.py`, `test_documents_ui.py`, `test_chat_ui.py`, `test_conversations_ui.py`, `test_settings_ui.py`), `frontend/src/**/*.test.tsx`
+  (phase 4: `pages/admin/SettingsPage.test.tsx`);
   phase 2, T-05: `test_docling.py`, `test_retry.py`, `test_pipeline_errors.py`, `test_retry_route.py`,
   `test_logging_privacy.py`; phase 2, T-06: `test_cleanup.py`, `test_document_delete.py`, `test_worker_recovery.py`; and the opt-in `tests/live/test_live_services.py` (`LIVE_SERVICES=1`, marker `live`, never in
   the default run or in CI: run it once by hand against your real Docling and Ollama).
