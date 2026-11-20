@@ -1,56 +1,48 @@
 # AGENTS.md
 
 ## Project
-advancedRAG: web platform for Retrieval-Augmented Generation over several Knowledge Bases (KB), Italian and English.
-Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + TypeScript frontend, PostgreSQL
-(ParadeDB: pgvector + pg_search), Redis, Nginx, deployed with Docker Compose. Ollama and Docling are external services.
+advancedRAG: Retrieval-Augmented Generation over several Knowledge Bases (KB), Italian and English. Modular monolith:
+FastAPI backend, RQ ingestion worker, React + TypeScript frontend, PostgreSQL (ParadeDB: pgvector + pg_search), Redis,
+Nginx, Docker Compose; Ollama and Docling are external services.
 
 ## Commands
-- Python for the playbook scripts: `python3` (written as `python` in the skills)
-- Setup: `uv sync --project backend` and `npm ci --prefix frontend`
+- Setup: `uv sync --project backend` and `npm ci --prefix frontend`; playbook scripts: `python3` (`python` in the skills)
 - Test services (Postgres and Redis for backend tests): `docker compose -f compose.test.yaml up -d --wait`
-- Full verification (definition of "done"): `python3 scripts/verify.py`
-- Quick verification (only while working): `python3 scripts/verify.py --fast`
+- Full verification (definition of "done"): `python3 scripts/verify.py`; only while working: `--fast`
 - Single test: `uv run --project backend pytest <path>::<name>` or `npm --prefix frontend run test -- <file>`
-- Local run: `docker compose up --build` (from phase 1); with HTTPS:
-  `docker compose -f compose.yaml -f compose.tls.yaml up --build` plus `nginx/certs/cert.pem` and `key.pem`
-- With the reranker (ADR-004): `docker compose --profile rerank up --build`; on a NVIDIA GPU add
-  `-f compose.rerank-gpu.yaml` (one reranker image at a time)
-- Worker of the ingestion queue: Compose service `worker` (`python -m app.worker`)
-- End-to-end tests only (full stack, part of verify): `uv run --directory backend pytest -m e2e`
-- Chromium for the Playwright e2e: `uv run --frozen --directory backend playwright install --with-deps chromium` (CI);
-  where a Chromium is already installed, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to it instead
+- Local run: `docker compose up --build` (ingestion worker: service `worker`, `python -m app.worker`); HTTPS:
+  `-f compose.yaml -f compose.tls.yaml` plus `nginx/certs/cert.pem` and `key.pem`; reranker (ADR-004): `--profile rerank`,
+  on a NVIDIA GPU also `-f compose.rerank-gpu.yaml` (one reranker image at a time)
+- E2E only (full stack, part of verify): `uv run --directory backend pytest -m e2e`; Chromium: `uv run --frozen --directory
+  backend playwright install --with-deps chromium` (CI), or `PLAYWRIGHT_CHROMIUM_EXECUTABLE` set to an installed one
 
 ## Conventions
-- Architecture source: `docs/specs/` (one spec per phase) and `docs/adr/`.
-- Docs in English headings as required by the playbook scripts; spec bodies may be in Italian.
-- No shell-specific commands in scripts: they must run on Windows and Linux.
-- Committed Dockerfiles stay free of proxy or corporate CA patches: such a patch is local only, never committed.
-  A lock around Docker (e.g. `flock`) is needed only on a shared local daemon, never in CI.
+- Architecture source: `docs/specs/` (one spec per phase) and `docs/adr/`. Docs in English headings as required by the
+  playbook scripts; spec bodies may be in Italian. No shell-specific commands in scripts (Windows and Linux).
+- Committed Dockerfiles stay free of proxy or corporate CA patches (local only); a lock around Docker (e.g. `flock`) is
+  needed only on a shared local daemon, never in CI.
 - Each e2e test file uses its own Compose project name and host ports and tears down with `down -v`; wait for
-  conditions, never sleep.
+  conditions, never sleep. Host ports in use: 18080, 18180, 18181, 18280, 18380, 18480, 18543, 18544, 18580, 18680,
+  18780, 18880; next free: 18980.
+- E2E fakes: profiles of `backend/tests/e2e/compose.fakes.yaml`, `generation` (`E2E_GENERATION_SCRIPT`: a JSON list, a
+  string is a fragment, a number a pause in s; fast unless the test is about timing), `rewrite`, `rerank` (`E2E_*` URLs); a
+  fake of a profiled service of `compose.yaml` overrides it (same name and profile), so the real image never starts.
+- The nginx image build runs `tsc` on the test files too: a locked frontend test that needs a new type gets it in a
+  skeleton commit first, or every e2e fails at the build.
 - API errors are `{"error": {"code", "message"}}`; an id that is not a UUID gets the same 404 as an unknown id
   (`user_not_found`, `kb_not_found`); admin routes put `require_admin` before path ids and body schema.
 - Name uniqueness is left to unique indexes on `lower()` with names trimmed first; `IntegrityError` 23505 → 409.
 - Backend tests never set an ORM object loaded in the test session to a value the database refuses (autoflush).
 - A signed-in page shows its load errors without `role="alert"`: the header language selector owns the alert (except the
   KB-not-found message of the chat page, which keeps the alert of phase 1: `KnowledgeBaseAdminPage.test.tsx`, AC-024).
-- Polling tests in Vitest call `vi.useFakeTimers({ shouldAdvanceTime: true })` before rendering.
-- Multipart `fetch` calls set no `Content-Type` (the browser adds the boundary): `FormData` plus `X-Requested-With`.
+- Vitest: polling tests call `vi.useFakeTimers({ shouldAdvanceTime: true })` first; only the upload (`FormData`, no
+  `Content-Type`) and `api.stream` send `X-Requested-With`: no test expects it on `api.delete`, `api.put`, `api.patch`.
 - SSE responses send `X-Accel-Buffering: no` and a keepalive comment at least every 15 s (Nginx reads with a 60 s timeout).
-- Host ports in use by the e2e tests: 18080, 18180, 18181, 18280, 18380, 18480, 18543, 18544, 18580, 18680, 18780;
-  next free: 18880.
 - Lock order of the chat: every writer that takes a conversation row locks it BEFORE any of its messages (`start_answer`,
   `complete_answer`, `restart_answer`, the delete and the cascade of a KB); the opposite order is a deadlock.
-- `ActiveAnswers` (`app.state.active_answers`) is in memory and single-process (ADR-003): never run more than one backend
-  process or replica without a new ADR (shared registry, review of `mark_interrupted`).
+- `ActiveAnswers` (`app.state.active_answers`) is in memory, single-process (ADR-003): one backend process, or a new ADR.
 - A `user` gets the same 404 for the conversation of another user, of an unassigned KB, an unknown id and an id that is not
   a UUID, never 403; the admin reads every conversation and writes in none of another user's (403).
-- The e2e fake generation provider is the profile `generation` of `backend/tests/e2e/compose.fakes.yaml`, with
-  `E2E_GENERATION_URL` and `E2E_GENERATION_SCRIPT` (a JSON list: a string is a fragment, a number a pause in seconds); use a
-  fast script unless the test is about timing.
-- Only the multipart upload and `api.stream` send `X-Requested-With`; `api.delete`, `api.put` and `api.patch` do not: a
-  frontend test must not expect the header on them.
 - `trace_check.py` on a whole spec needs the test folders as ONE flag with two paths: `--tests backend/tests frontend/src`.
 
 ## Rules
@@ -60,16 +52,14 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
   `compose.yaml`, `compose.rerank-gpu.yaml`, `nginx/`, `.github/workflows/`
 - Dependencies: only those of `docs/adr/ADR-001-toolchain-fase-1.md`, `docs/adr/ADR-002-ingestion.md` and
   `docs/adr/ADR-004-rerank-rewrite.md` (reranker image, no new library); any other is asked first.
-- Every behaviour change requires a test, written from the acceptance criteria before the code.
-- Never declare a task completed without having run `python3 scripts/verify.py` successfully.
+- A behaviour change needs a test written from the ACs before the code; no task is done without a green `verify.py`.
 - Ambiguity or missing requirements: stop and ask, do not assume.
 - Behaviour changes: update the spec or the area page in `docs/system/` in the same PR.
 - Choices and the merge question are asked as options to select (`sdd-start/references/interaction.md`).
 - Every access to a KB, its documents or conversations goes through `KnowledgeBaseRepository.list_for`/`get_for` or
   a query joined with `kb_members` in the same SQL statement, with an isolation test that calls it directly.
-- Uploaded originals live only in `UPLOAD_DIR`, named by the document id; they are deleted at READY or UNSUPPORTED, when
-  the document or its KB is deleted, and after `FAILED_ORIGINAL_RETENTION_DAYS` if FAILED. Logs never contain document
-  content, file names or vectors.
+- Uploaded originals live only in `UPLOAD_DIR`, named by the document id, deleted at READY or UNSUPPORTED, with the
+  document or its KB, and `FAILED_ORIGINAL_RETENTION_DAYS` after FAILED; logs never hold document content, names or vectors.
 - Vectors of different indexing profiles never mix: every vector search filters on `profile_id` and uses the profile's HNSW
   expression `embedding::vector(N)`.
 - Automated tests never call the real Ollama, Docling, generation provider, rewriting provider or reranker: they use
@@ -99,14 +89,12 @@ removed here.
 - Return chunks, sources or metadata of a KB the caller is not authorized for, in any API or SQL query
 
 ## Areas
-<!-- One line per area page, added when a feature closes: `docs/system/<area>.md`: what it covers -->
-- `docs/system/fondazioni.md`: stack (Compose, Nginx/TLS, health), login and sessions, users, knowledge bases and
-  per-KB isolation (`KnowledgeBaseRepository`), UI pages and i18n
+- `docs/system/fondazioni.md`: stack (Compose, Nginx/TLS, health, optional reranker), login and sessions, users,
+  knowledge bases and per-KB isolation (`KnowledgeBaseRepository`), admin switches and page «Impostazioni», UI and i18n
 - `docs/system/ingestion.md`: documents and ingestion (upload API and validation, RQ worker, Docling and Ollama pipeline,
   chunks, indexing profiles and indexes, retention of originals, Documents page), with the notes for phase 3
-- `docs/system/chat.md`: chat (hybrid retrieval: vector + BM25 + RRF; answers streamed as SSE through Nginx; conversations,
-  messages and sources; admin read-only page "Conversazioni"; `ActiveAnswers`), with its known limits
+- `docs/system/chat.md`: chat (vector + BM25 + RRF, optional rewriting and reranker, SSE through Nginx, conversations,
+  messages, sources and «Ricerca: …», admin read-only page "Conversazioni", `ActiveAnswers`), with its known limits
 
 ## Documentation
-- Specs in `docs/specs/<id>/`. Read `spec.md` and `plan.md` before writing code.
-- Non-trivial bugs: `docs/bugs/`. Current behaviour per area: `docs/system/`.
+- Specs in `docs/specs/<id>/` (read `spec.md` and `plan.md` before code); bugs in `docs/bugs/`; areas in `docs/system/`.

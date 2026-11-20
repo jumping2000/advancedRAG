@@ -191,9 +191,9 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 - `UserOut` = `{"id", "username", "role", "is_active", "language"}` (never a password or hash);
   `KnowledgeBaseOut` = `{"id", "name", "description", "created_at"}`. Extra fields in a body are ignored.
 - Frontend routes: `/login`, `/` (own KB list), `/kbs/:kbId` (the chat page since phase 3), `/admin/users`, `/admin/kbs`,
-  `/admin/documents` (phase 2, T-07) and `/admin/conversations` (phase 3, T-07); the four `/admin/` routes are admin only: a
-  `user` is sent to `/`, no session to `/login`. The header menu of the admin lists Users, Knowledge Base, Documents and
-  Conversations; the client has `api.upload` for the multipart upload of a document and `api.stream` for the answers.
+  `/admin/documents` (phase 2, T-07), `/admin/conversations` (phase 3, T-07) and `/admin/settings` (phase 4, T-05); the five
+  `/admin/` routes are admin only: a `user` is sent to `/`, no session to `/login`. The header menu of the admin lists Users,
+  Knowledge Base, Documents, Conversations and Settings; the client has `api.upload` for the multipart upload of a document and `api.stream` for the answers.
 - Configuration (`.env.example`): `POSTGRES_PASSWORD` (any character, set on the URL object, never pasted into
   `DATABASE_URL`), `HTTP_PORT`, `HTTPS_PORT` (with `compose.tls.yaml`), `DATABASE_URL`, `REDIS_URL` (set by
   `compose.yaml`), `OLLAMA_BASE_URL`, `DOCLING_BASE_URL`, `HEALTH_CHECK_TIMEOUT_SECONDS` (2), `ADMIN_USERNAME`,
