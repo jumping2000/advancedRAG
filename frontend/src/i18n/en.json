@@ -180,6 +180,7 @@
     "assistant": "Assistant",
     "messages": "Messages",
     "sources": "Sources",
+    "searchQuery": "Search: {{query}}",
     "showExcerpt": "Show excerpt",
     "hideExcerpt": "Hide excerpt",
     "sourceUnavailable": "Source no longer available",
@@ -202,6 +203,18 @@
       "conversation_not_found": "Conversation not found.",
       "not_retryable": "Retry is not possible: only the last answer, if it failed, can be repeated.",
       "validation_error": "The text is not valid: check its length."
+    }
+  },
+  "settings": {
+    "menu": "Settings",
+    "title": "Settings",
+    "rewrite": "Question rewriting",
+    "rewriteHelp": "Rewrites a follow-up question as a standalone question before the search.",
+    "rerank": "Reranker",
+    "rerankHelp": "Reorders the retrieved passages before the answer.",
+    "notConfigured": "Not configured",
+    "errors": {
+      "service_not_configured": "The service of this step is not configured."
     }
   },
   "errors": {
