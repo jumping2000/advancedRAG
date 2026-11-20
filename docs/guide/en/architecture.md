@@ -19,7 +19,7 @@ flowchart LR
         nginx["nginx: React frontend, proxy of /api/, HTTPS on request"]
         backend["backend: FastAPI, one process, API, chat and SSE"]
         worker["worker: ingestion jobs, one at a time"]
-        redis[("redis: sessions and queue ingestion")]
+        redis[("redis: sessions and ingestion queue")]
         db[("db: ParadeDB, PostgreSQL 17 with pgvector and pg_search")]
         uploads[("uploads volume: originals until the outcome")]
         reranker["reranker: optional, profile rerank"]
@@ -211,7 +211,7 @@ Chromium comes from `playwright install` (this is the CI step), or from a browse
 uv run --frozen --directory backend playwright install --with-deps chromium
 ```
 
-If you have a Chromium, set the variable `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to its executable instead of installing one. Each e2e test file uses its own Compose project name and its own host ports, waits for conditions and never sleeps, and tears the stack down with `down -v`. The ports in use are listed in `AGENTS.md`; the next free one is 19080.
+If you have a Chromium, set the variable `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to its executable instead of installing one. Each e2e test file uses its own Compose project name and its own host ports, waits for conditions and never sleeps, and tears the stack down with `down -v`. The ports in use, and the next free one, are listed in `AGENTS.md`.
 
 ### Screenshots of the guides
 
@@ -257,13 +257,13 @@ Tasks that are ready at the same time and touch different files can run together
 
 | The agent decides alone | The agent asks first | Never |
 |---|---|---|
-| Internal names and structure within the conventions and the plan's interfaces; library calls, algorithms and data structures the plan leaves open; test data and structure; log messages. Each one is written under "Decisions taken alone" in the PR | Anything a user can see that the spec leaves open (values, limits, defaults, messages); changes of the data model or of a public interface beyond the plan; a new dependency or a deviation from an ADR; a file outside the task's files; a call to an external service the spec does not configure | Change the spec or the plan inside a task (a change is a new design PR); modify or weaken a locked test, or any test, to make it pass; commit on `main` or push to it; merge without your choice; return chunks, sources or metadata of a KB the caller cannot read |
+| Internal names and structure within the conventions and the plan's interfaces; library calls, algorithms and data structures the plan leaves open; test data and structure; log messages. Each one is written under "Decisions taken alone" in the PR | Anything a user can see that the spec leaves open (values, limits, defaults, messages); changes of the data model or of a public interface beyond the plan; a new dependency or a deviation from an ADR; a file outside the task's files; a call to an external service the spec does not configure | Change the spec or the plan inside a task (a change is a new design PR); change `AGENTS.md` outside the update proposed at the design PR or at the close of the feature, after you selected it; modify or weaken a locked test, or any test, to make it pass; commit on `main` or `master`; merge a PR without your selecting the merge; push to `main`; return chunks, sources or metadata of a KB the caller cannot read |
 
 A decision that no line names counts as "asks first".
 
 ### What is never done
 
-An applied migration of `backend/migrations/versions/` is never edited: add a new one. A Dockerfile with a proxy or a certificate patch is never committed. A real secret, password or personal data never goes in a document, a screenshot or a test. A test that disagrees with the code is not changed to agree: the spec decides which of the two is wrong.
+An applied migration of `backend/migrations/versions/` is never edited: add a new one. A Dockerfile with a proxy or a certificate patch is never committed. A real secret, password or personal data never goes in a document, a screenshot or a test. A test is never changed, skipped or weakened to make it pass: when a test disagrees with the code, the spec decides which of the two is wrong. A locked test that turns out to be wrong is fixed in a new `Test-Lock: T-nn` commit, explained in the PR.
 
 ## Where to read more
 
