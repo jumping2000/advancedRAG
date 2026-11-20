@@ -123,7 +123,7 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 
 | Method and path | Who | Success | Errors |
 |---|---|---|---|
-| `GET /api/health` | anyone | 200 `{"status": "ok"\|"degraded", "checks": {"database", "redis", "ollama", "docling", "worker", "generation"}}`, each `ok` or `unreachable`, except `generation`; `worker` is `ok` when at least one `ingestion:worker:alive:*` key exists in Redis; `generation` (phase 3) is `not_configured` when `GENERATION_BASE_URL` is empty (no request is sent), else `ok` if `GET {GENERATION_BASE_URL}/models` answers 2xx within `HEALTH_CHECK_TIMEOUT_SECONDS`, else `unreachable`; `status` is `ok` only if every check is `ok`, so a stack without a generation provider is `degraded` | 503 (same body) when database or Redis is `unreachable`; the other checks never change the code |
+| `GET /api/health` | anyone | 200 `{"status": "ok"\|"degraded", "checks": {"database", "redis", "ollama", "docling", "worker", "generation", "rewrite", "rerank"}}`, each `ok` or `unreachable`, except `generation`, `rewrite` and `rerank`; `worker` is `ok` when at least one `ingestion:worker:alive:*` key exists in Redis; `generation` (phase 3) is `not_configured` when `GENERATION_BASE_URL` is empty (no request is sent), else `ok` if `GET {GENERATION_BASE_URL}/models` answers 2xx within `HEALTH_CHECK_TIMEOUT_SECONDS`, else `unreachable`; `rewrite` and `rerank` (phase 4) follow the same rule with `GET {REWRITE_BASE_URL}/models` and, for the reranker, `GET {RERANK_BASE_URL}/health` (`tei`) or `GET {RERANK_BASE_URL}/models` (`cohere`), each with its own key as `Authorization: Bearer` when set and no redirect followed; they depend on the configuration, not on the switches of the admin; `status` is `ok` only if every check is `ok`, so a stack without a generation provider, a rewriting service or a reranker is `degraded` | 503 (same body) when database or Redis is `unreachable`; the other checks never change the code |
 | `POST /api/auth/login` `{"username", "password"}` | anyone | 200 `UserOut` + cookie | 401 `invalid_credentials` (wrong password, unknown or deactivated user) |
 | `POST /api/auth/logout` | session | 204 | 401 `not_authenticated` |
 | `GET /api/auth/me`, `PATCH /api/auth/me` `{"language": "it"\|"en"}` | session | 200 `UserOut` | 401, 422 |
@@ -140,6 +140,8 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
 | `GET /api/kbs/{kb_id}/members` | admin | 200 `[UserOut]`, ordered by `lower(username)` | 404 `kb_not_found` |
 | `PUT /api/kbs/{kb_id}/members/{user_id}` | admin | 204 (idempotent: one row, also under concurrency; inactive users accepted) | 404 `kb_not_found`, then 404 `user_not_found` (also for a non-UUID id) |
 | `DELETE /api/kbs/{kb_id}/members/{user_id}` | admin | 204 (also when the user was not assigned) | 404 `kb_not_found`, then 404 `user_not_found` |
+| `GET /api/admin/settings` | admin | 200 `{"rerank": {"enabled", "configured"}, "rewrite": {"enabled", "configured"}}`: `enabled` is the saved switch, `configured` whether the base URL of the service is set (phase 4) | 401, 403 `forbidden` |
+| `PUT /api/admin/settings` `{"rerank_enabled"?, "rewrite_enabled"?}` | admin | 200, the same body with the saved state (only the fields sent change; switching off is always allowed) | 409 `service_not_configured` (a step switched on whose service is not configured: nothing is saved, not even the other field); 422 `validation_error` (neither field, or a value that is not a JSON boolean: `"yes"`, `"true"`, `1`, `null`) |
 
 - Order of the checks: a `POST`/`PUT`/`PATCH`/`DELETE` whose `Content-Type` is not `application/json`
   (`require_json`) and a body that is not well-formed JSON get 422 `validation_error` first, before the session;
@@ -188,6 +190,15 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   already buffered); the messages are fixed text and the error holds no other exception, so that neither the key nor
   the prompt can reach a log. The key is kept as a secret string in the client. Settings errors do not print the
   input values (a startup error never shows `GENERATION_API_KEY`).
+- Rewriting and reranker (phase 4, T-01; backend only, the worker does not get them): `REWRITE_BASE_URL`,
+  `REWRITE_MODEL`, `REWRITE_API_KEY`, `REWRITE_TIMEOUT_SECONDS` (30, above 0) and `RERANK_BASE_URL`, `RERANK_API`
+  (`tei` or `cohere`, default `tei`; blank is `tei`), `RERANK_MODEL` (required with `cohere`), `RERANK_API_KEY`,
+  `RERANK_CANDIDATES` (20, from 1 to `RETRIEVAL_CANDIDATES`), `RERANK_TIMEOUT_SECONDS` (15, above 0). An empty base
+  URL means not configured; the base URLs follow the rule of `GENERATION_BASE_URL`, and `REWRITE_MODEL` is required
+  with `REWRITE_BASE_URL`. Any value that is not valid stops the backend at startup with a message that names the
+  variable and never shows a URL or a key; the two keys are secrets, empty in `.env.example`. The global switches
+  `rerank_enabled` and `rewrite_enabled` are the single row of `app_settings` (migration 0006, `id = 1`, both off at
+  first; `backend/app/app_settings/`); a step is active only when it is switched on and configured (`active_steps`).
 - The retry route (phase 2, T-05) is the second POST without a JSON body: a POST with no `Content-Type` passes
   `require_json`, so the UI presses the button with a plain `fetch` POST. It checks the original with `UploadStorage`
   before it requeues (`DocumentRepository.requeue` changes FAILED to QUEUED in one statement, so two simultaneous
@@ -445,7 +456,9 @@ The complete list, with the notes for phase 3, is in [ingestion.md](ingestion.md
   [plan.md](../specs/2026-11-06-fase-1-fondazioni/plan.md); toolchain: [ADR-001](../adr/ADR-001-toolchain-fase-1.md).
 - Stack: [compose.yaml](../../compose.yaml), [compose.tls.yaml](../../compose.tls.yaml),
   [nginx/entrypoint-tls.sh](../../nginx/entrypoint-tls.sh), [backend/app/run.py](../../backend/app/run.py),
-  [backend/app/api/health.py](../../backend/app/api/health.py).
+  [backend/app/api/health.py](../../backend/app/api/health.py); the switches of phase 4:
+  [app_settings/routes.py](../../backend/app/app_settings/routes.py),
+  [0006_rerank_rewrite.py](../../backend/migrations/versions/0006_rerank_rewrite.py).
 - Worker (phase 2, T-04 to T-06): [worker.py](../../backend/app/worker.py), [cleanup.py](../../backend/app/ingestion/cleanup.py),
   [jobs.py](../../backend/app/ingestion/jobs.py),
   [pipeline.py](../../backend/app/ingestion/pipeline.py), [embeddings.py](../../backend/app/ingestion/embeddings.py),
