@@ -27,8 +27,15 @@ si accendono e spengono senza riavvio da una pagina admin (REQ-003). Il backend 
   - CPU (`compose.yaml`): `ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4`;
   - GPU (`compose.rerank-gpu.yaml`): `ghcr.io/huggingface/text-embeddings-inference:1.9.4`, compilata per la compute
     capability 8.0, che TEI accetta sulle GPU da 8.0 a 8.9: Ampere (A100, A30, A10, A40, RTX 30xx) e Ada Lovelace
-    (RTX 40xx, L4, L40). Per Turing, Hopper o Blackwell si usa il tag della stessa release indicato dalla tabella del
-    README (`turing-1.9.4`, `hopper-1.9.4`, `100-1.9.4`, `120-1.9.4`);
+    (RTX 40xx, L4, L40). Esistono anche i tag per una sola famiglia della stessa release (`86-1.9.4` per Ampere 8.6,
+    `89-1.9.4` per Ada). Per Turing, Hopper o Blackwell si usa il tag della stessa release indicato dalla tabella del
+    README (`turing-1.9.4`, `hopper-1.9.4`, `100-1.9.4`, `120-1.9.4`). La GPU è solo NVIDIA su host x86_64: le GPU più
+    vecchie (Volta, Pascal) e gli host ARM non sono coperti;
+  - su CPU (`--profile rerank` con il solo `compose.yaml`) nessun servizio usa l'immagine GPU, un dispositivo o un
+    runtime GPU: si scarica solo l'immagine CPU;
+  - `MAX_CLIENT_BATCH_SIZE` del servizio è `RERANK_CANDIDATES` (20 se vuota): TEI rifiuta con 422 un `/rerank` con più
+    testi (32 di default, `router/src/main.rs` e `router/src/http/server.rs` di `v1.9.4`), mentre `RERANK_CANDIDATES`
+    arriva fino a `RETRIEVAL_CANDIDATES` (50);
   - verifica: con l'API del registro `ghcr.io/v2/huggingface/text-embeddings-inference` (elenco dei tag e manifest),
     1.9.4 è la release più alta, `cpu-1.9.4` e `1.9.4` sono indici OCI `linux/amd64` con lo stesso digest dei tag mobili
     `cpu-1.9` e `1.9` (`latest` e `cpu-latest` sono build del ramo principale, non una release); nel tag `v1.9.4` del
@@ -52,7 +59,9 @@ si accendono e spengono senza riavvio da una pagina admin (REQ-003). Il backend 
 - Nel caso peggiore il primo frammento arriva fino a `REWRITE_TIMEOUT_SECONDS` più `RERANK_TIMEOUT_SECONDS` dopo
   (45 s con i valori predefiniti).
 - Senza accesso a Hugging Face al primo avvio il reranker del Compose non diventa sano: la chat ripiega su RRF e la
-  salute mostra `rerank: unreachable`.
-- La GPU richiede NVIDIA Container Toolkit sull'host; l'immagine GPU predefinita vale per una famiglia di GPU, le altre
+  salute mostra `rerank: unreachable`. Serve solo il primo avvio: dopo, il modello è nel volume `reranker-models` e TEI
+  1.9.4 lo legge dalla cache prima di chiedere alla rete (`ApiRepo::get` di hf-hub 0.4.3; i file facoltativi che non
+  trova sono tentati in rete e saltati se il tentativo fallisce).
+- La GPU richiede NVIDIA Container Toolkit sull'host; l'immagine GPU predefinita vale per Ampere e Ada Lovelace, le altre
   richiedono di cambiare il tag nel file aggiuntivo.
 - Più processi del backend restano esclusi (ADR-003); gli interruttori in PostgreSQL non ne sono un ostacolo.

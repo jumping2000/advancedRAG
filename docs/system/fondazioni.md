@@ -27,15 +27,20 @@ starts uvicorn. Ollama and Docling are external: `GET /api/health` reports them 
 The Compose has an optional sixth service, `reranker` (phase 4, T-04, ADR-004), only in the profile `rerank`: without
 `--profile rerank` the stack is the five services above. It runs Hugging Face text-embeddings-inference, CPU image
 `ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4`, with the model `MODEL_ID` = `RERANK_COMPOSE_MODEL` (default
-`BAAI/bge-reranker-v2-m3`), downloaded from Hugging Face at its first start into the `reranker-models` volume (mounted at
-`/data`). It listens on port 80 of the Compose network only (no host port): the backend uses it with
+`BAAI/bge-reranker-v2-m3`, also when the variable is empty or missing), downloaded from Hugging Face at its first start
+into the `reranker-models` volume (mounted at `/data`). `MAX_CLIENT_BATCH_SIZE` is `RERANK_CANDIDATES` (20 when empty):
+TEI refuses with 422 a `/rerank` with more texts (32 by default), and the backend sends up to `RERANK_CANDIDATES`. It
+listens on port 80 of the Compose network only (no host port): the backend uses it with
 `RERANK_BASE_URL=http://reranker` and `RERANK_API=tei`, which `.env` must set (the Compose does not set them). Its health
-check is `curl` on `/health`, with a `start_period` of 30 minutes for the download; until the model is ready, and
-always without access to Hugging Face, the service is not healthy, the chat keeps the RRF order and `GET /api/health`
-shows `rerank` as `unreachable`. No other service waits for it. On a NVIDIA GPU (NVIDIA Container Toolkit on the host)
-`-f compose.rerank-gpu.yaml` replaces the image with `ghcr.io/huggingface/text-embeddings-inference:1.9.4` (Ampere and
-Ada Lovelace; other families change the tag in that file) and reserves one GPU, so the service stays one; the file
-alone, without the profile, starts no reranker.
+check is `curl` on `/health`, with a `start_period` of 30 minutes for the download. Only the first start needs Hugging
+Face: until the model is in the volume (and always if that first download cannot reach Hugging Face) the service is not
+healthy, the chat keeps the RRF order and `GET /api/health` shows `rerank` as `unreachable`; later starts read the model
+from the volume. No other service waits for it. The CPU start (`--profile rerank` with `compose.yaml` alone) uses no GPU
+image, device or runtime, so it pulls only the CPU image. GPU support is NVIDIA only: on a x86_64 host with the NVIDIA
+Container Toolkit, `-f compose.rerank-gpu.yaml` replaces the image with
+`ghcr.io/huggingface/text-embeddings-inference:1.9.4` (Ampere and Ada Lovelace; the per-family tags `86-1.9.4` and
+`89-1.9.4` also exist, and Turing, Hopper and Blackwell change the tag in that file; Volta, Pascal and ARM hosts are not
+covered) and reserves one GPU, so the service stays one; the file alone, without the profile, starts no reranker.
 
 The worker (`app/worker.py`) runs the jobs of the RQ queue `ingestion` one at a time with `rq.SimpleWorker` (no fork per
 job). While it runs, a daemon thread writes the Redis key `ingestion:worker:alive:{hostname}` (value `1`, expiry 30
