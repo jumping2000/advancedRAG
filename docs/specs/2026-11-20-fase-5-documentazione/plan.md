@@ -68,7 +68,8 @@ Alternative scartate:
     di `compose_volumes()`;
   - `backend/tests/test_docs_architecture_guide.py` (T-04): un blocco Mermaid `flowchart`, e i link a `docs/system/`,
     `docs/specs/`, `docs/adr/`, `AGENTS.md`, `docs/constitution.md`;
-  - `backend/tests/test_docs_guides_complete.py` (T-04, AC-004): le due cartelle contengono esattamente `GUIDES`.
+  - `backend/tests/test_docs_guides_complete.py` (T-06, AC-004): le due cartelle contengono esattamente `GUIDES`; sta in T-06
+    perché solo allora esistono tutte e quattro le guide.
 - `backend/tests/e2e/test_screenshots.py` (T-02):
   - marcatore `screenshots`, aggiunto a `markers` e escluso in `addopts` di `backend/pyproject.toml`;
   - progetto Compose `advancedrag-screenshots`, porta host 18980, profili `generation`, `rewrite`, `rerank`;
@@ -119,9 +120,9 @@ flowchart TD
 - [x] T-01 La guida di installazione IT/EN documenta ogni variabile e i test tengono allineate le guide — covers: AC-007, AC-011, AC-012, AC-017 — files: `backend/tests/docs_support.py`, `backend/tests/test_docs_alignment.py`, `backend/tests/test_docs_install_guide.py`, `docs/guide/en/installation.md`, `docs/guide/it/installation.md` — depends: none — verify: `python3 scripts/verify.py`
 - [ ] T-02 La guida utente IT/EN con le schermate catturate dallo stack di test — covers: AC-005, AC-009, AC-016 — files: `backend/tests/e2e/test_screenshots.py`, `backend/pyproject.toml`, `docs/guide/images/en/`, `docs/guide/images/it/`, `docs/guide/en/user.md`, `docs/guide/it/user.md`, `backend/tests/test_docs_user_guide.py` — depends: T-01 — verify: `python3 scripts/verify.py`
 - [ ] T-03 La guida admin IT/EN — covers: AC-006 — files: `docs/guide/en/admin.md`, `docs/guide/it/admin.md`, `backend/tests/test_docs_admin_guide.py` — depends: T-02 — verify: `python3 scripts/verify.py`
-- [ ] T-04 La guida di architettura e sviluppo IT/EN — covers: AC-004, AC-008 — files: `docs/guide/en/architecture.md`, `docs/guide/it/architecture.md`, `backend/tests/test_docs_architecture_guide.py`, `backend/tests/test_docs_guides_complete.py` — depends: T-01 — verify: `python3 scripts/verify.py`
+- [ ] T-04 La guida di architettura e sviluppo IT/EN — covers: AC-008 — files: `docs/guide/en/architecture.md`, `docs/guide/it/architecture.md`, `backend/tests/test_docs_architecture_guide.py` — depends: T-01 — verify: `python3 scripts/verify.py`
 - [ ] T-05 I README EN/IT con i badge e la licenza Apache-2.0 — covers: AC-001, AC-002, AC-003, AC-010 — files: `README.md`, `README.it.md`, `LICENSE`, `backend/tests/test_readme.py` — depends: T-03, T-04 — verify: `python3 scripts/verify.py`
-- [ ] T-06 Il controllo finale delle fasi 1-4, con il rapporto e un bug per difetto; chiude la fase 5 — covers: AC-013, AC-014, AC-015 — files: `docs/audit/2026-11-20-controllo-finale.md`, `docs/bugs/`, `backend/tests/test_docs_audit.py`, `docs/system/fondazioni.md`, `docs/specs/2026-11-20-fase-5-documentazione/spec.md`, `AGENTS.md` — depends: T-05 — verify: `python3 scripts/verify.py`
+- [ ] T-06 Il controllo finale delle fasi 1-4, con il rapporto e un bug per difetto; chiude la fase 5 — covers: AC-004, AC-013, AC-014, AC-015 — files: `docs/audit/2026-11-20-controllo-finale.md`, `docs/bugs/`, `backend/tests/test_docs_audit.py`, `backend/tests/test_docs_guides_complete.py`, `docs/system/fondazioni.md`, `docs/specs/2026-11-20-fase-5-documentazione/spec.md`, `AGENTS.md` — depends: T-05 — verify: `python3 scripts/verify.py`
 
 T-02 e T-04 dipendono solo da T-01 e toccano file diversi: possono andare in parallelo. T-03 segue T-02, perché usa le
 sue schermate.
@@ -155,4 +156,4 @@ sue schermate.
   correzione è una PR di `sdd-bugfix`.
 
 ## Revisions
-- none
+- 2026-11-20: AC-004 e `test_docs_guides_complete.py` passano da T-04 a T-06. Il test chiede tutte e quattro le guide in entrambe le lingue, ma `user.md` esiste solo dopo T-02 e `admin.md` solo dopo T-03, che segue T-02: nella verifica e nella CI di T-04 sarebbe rimasto rosso. Trovato prima di avviare T-02 e T-04, nessun task era in corso.
