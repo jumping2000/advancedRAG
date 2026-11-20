@@ -359,11 +359,17 @@ class ConversationRepository:
         return asked, answer
 
     async def complete_answer(
-        self, message_id: uuid.UUID, content: str, notice: str | None, sources: Sequence[tuple[int, Candidate, bool]]
+        self,
+        message_id: uuid.UUID,
+        content: str,
+        notice: str | None,
+        sources: Sequence[tuple[int, Candidate, bool]],
+        search_query: str | None = None,
     ) -> Message | None:
-        """End a PENDING answer as COMPLETED with its text, its notice and all the sources of its context, in one
-        transaction. None, and nothing written, if the answer is not PENDING (conversation deleted, answer ended).
-        The conversation row is locked first (see the module: lock order)."""
+        """End a PENDING answer as COMPLETED with its text, its notice, the question that was searched when the
+        rewriting changed it (`search_query`, else None) and all the sources of its context, in one transaction. None,
+        and nothing written, if the answer is not PENDING (conversation deleted, answer ended). The conversation row is
+        locked first (see the module: lock order)."""
         conversation_id = await self.session.scalar(
             select(Conversation.id)
             .join(Message, Message.conversation_id == Conversation.id)
@@ -376,7 +382,7 @@ class ConversationRepository:
         message: Message | None = await self.session.scalar(
             update(Message)
             .where(Message.id == message_id, Message.status == "PENDING")
-            .values(content=content, status="COMPLETED", error_code=None, notice=notice)
+            .values(content=content, status="COMPLETED", error_code=None, notice=notice, search_query=search_query)
             .returning(Message)
             .execution_options(populate_existing=True)
         )
@@ -421,13 +427,13 @@ class ConversationRepository:
         return changed
 
     async def restart_answer(self, conversation: Conversation, message_id: uuid.UUID) -> Message:
-        """Put the FAILED answer `message_id` back to PENDING, empty, in place: the same row, so the conversation keeps
-        one question and one answer in the same order (`created_at` is not touched), and the activity of the
-        conversation is marked. It must be the last message of the conversation: that is checked, with its status and
-        its role, in the UPDATE itself, so nothing can come between the check and the change. `MessageNotFound` if the
-        conversation has no such message, `AnswerInProgress` if it has a PENDING answer (checked before `NotRetryable`:
-        while an answer is in progress, any retry is refused for that reason; also when a simultaneous request got the
-        unique index `messages_one_pending` first), `NotRetryable` otherwise (a question, a COMPLETED answer, a failed
+        """Put the FAILED answer `message_id` back to PENDING, empty (no `search_query` either), in place: the same row,
+        so the conversation keeps one question and one answer in the same order (`created_at` is not touched), and the
+        activity of the conversation is marked. It must be the last message of the conversation: that is checked, with
+        its status and its role, in the UPDATE itself, so nothing can come between the check and the change.
+        `MessageNotFound` if the conversation has no such message, `AnswerInProgress` if it has a PENDING answer
+        (checked before `NotRetryable`: while an answer is in progress, any retry is refused for that reason; also when
+        a simultaneous request got the unique index `messages_one_pending` first), `NotRetryable` otherwise (a question, a COMPLETED answer, a failed
         answer that a later message follows). Nothing is written when it raises. The conversation row is locked first
         (see the module: lock order); if it is gone the message is gone too (`MessageNotFound`)."""
         conversation_id = conversation.id
@@ -452,7 +458,7 @@ class ConversationRepository:
                     Message.status == "FAILED",
                     is_last,
                 )
-                .values(content="", status="PENDING", error_code=None, notice=None)
+                .values(content="", status="PENDING", error_code=None, notice=None, search_query=None)
                 .returning(Message)
                 .execution_options(populate_existing=True)
             )
