@@ -66,6 +66,17 @@ services:
       CHAT_CONTEXT_CHUNKS: ${CHAT_CONTEXT_CHUNKS:-8}
       CHAT_HISTORY_MESSAGES: ${CHAT_HISTORY_MESSAGES:-6}
       CHAT_MAX_QUESTION_CHARS: ${CHAT_MAX_QUESTION_CHARS:-4000}
+      # The question rewriting and the reranker (phase 4): only the backend calls them, the worker does not get these
+      REWRITE_BASE_URL: ${REWRITE_BASE_URL:-}
+      REWRITE_MODEL: ${REWRITE_MODEL:-}
+      REWRITE_API_KEY: ${REWRITE_API_KEY:-}
+      REWRITE_TIMEOUT_SECONDS: ${REWRITE_TIMEOUT_SECONDS:-30}
+      RERANK_BASE_URL: ${RERANK_BASE_URL:-}
+      RERANK_API: ${RERANK_API:-tei}
+      RERANK_MODEL: ${RERANK_MODEL:-}
+      RERANK_API_KEY: ${RERANK_API_KEY:-}
+      RERANK_CANDIDATES: ${RERANK_CANDIDATES:-20}
+      RERANK_TIMEOUT_SECONDS: ${RERANK_TIMEOUT_SECONDS:-15}
     volumes:
       - uploads:/data/uploads
     depends_on:

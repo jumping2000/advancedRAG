@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Self
+from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -84,6 +84,23 @@ class Settings(BaseSettings):
     # Level of the logging of the backend (configured at startup by `app.run`); only the backend reads it, the worker
     # has its own logging. Any case; empty counts as not set. The lines of the chat are at INFO.
     log_level: str = "INFO"
+    # Phase 4 (REQ-001): the service that rewrites a follow-up question into a standalone one, an OpenAI-compatible API
+    # of its own. An empty base URL means not configured; with a base URL, the model is required. The key is sent as
+    # "Authorization: Bearer" when set; one rewriting waits at most this many seconds. Only the backend reads them.
+    rewrite_base_url: str = ""
+    rewrite_model: str = ""
+    rewrite_api_key: SecretStr | None = None
+    rewrite_timeout_seconds: float = 30
+    # Phase 4 (REQ-002): the reranker, in the format of text-embeddings-inference (`tei`) or of Cohere (`cohere`, which
+    # requires the model; `tei` does not use it). An empty base URL means not configured. The first
+    # `rerank_candidates` chunks of the fusion (1 to RETRIEVAL_CANDIDATES) are reranked, waiting at most
+    # `rerank_timeout_seconds`. The ranges are checked by `_check_step_settings`, so that the error names the variable.
+    rerank_base_url: str = ""
+    rerank_api: Literal["tei", "cohere"] = "tei"
+    rerank_model: str = ""
+    rerank_api_key: SecretStr | None = None
+    rerank_candidates: int = 20
+    rerank_timeout_seconds: float = 15
     chunk_target_words: int = 300
     chunk_min_words: int = 50
     chunk_max_words: int = 450
@@ -135,6 +152,56 @@ class Settings(BaseSettings):
         if self.generation_base_url and not self.generation_model:
             raise ValueError("GENERATION_MODEL must be set when GENERATION_BASE_URL is set")
         return self
+
+    @field_validator("rewrite_base_url", "rewrite_model", "rerank_base_url", "rerank_model")
+    @classmethod
+    def _strip_step_text(cls, value: str) -> str:
+        """Blank counts as empty, as for the generation provider."""
+        return value.strip()
+
+    @field_validator("rerank_api", mode="before")
+    @classmethod
+    def _check_rerank_api(cls, value: Any) -> Any:
+        """Blank counts as not set (`tei`); any other value than `tei` or `cohere` names the variable."""
+        if isinstance(value, str):
+            value = value.strip() or "tei"
+        if value not in ("tei", "cohere"):
+            raise ValueError("RERANK_API must be tei or cohere")  # the value is not repeated
+        return value
+
+    @model_validator(mode="after")
+    def _check_step_settings(self) -> Self:
+        """REQ-001 and REQ-002: the first problem found stops the backend; the message names the variable and never
+        repeats a URL (it can carry credentials) or a key."""
+        if self.rewrite_base_url and not _is_http_url_with_host(self.rewrite_base_url):
+            raise ValueError(
+                "REWRITE_BASE_URL must be an http or https URL with a host, for example http://rewrite.example.internal/v1"
+            )
+        if self.rewrite_base_url and not self.rewrite_model:
+            raise ValueError("REWRITE_MODEL must be set when REWRITE_BASE_URL is set")
+        if not self.rewrite_timeout_seconds > 0:
+            raise ValueError(f"REWRITE_TIMEOUT_SECONDS must be above 0, got {self.rewrite_timeout_seconds}")
+        if self.rerank_base_url and not _is_http_url_with_host(self.rerank_base_url):
+            raise ValueError("RERANK_BASE_URL must be an http or https URL with a host, for example http://reranker")
+        if self.rerank_api == "cohere" and not self.rerank_model:
+            raise ValueError("RERANK_MODEL must be set when RERANK_API is cohere")
+        if not 1 <= self.rerank_candidates <= self.retrieval_candidates:
+            raise ValueError(
+                f"RERANK_CANDIDATES must be from 1 to RETRIEVAL_CANDIDATES ({self.retrieval_candidates}),"
+                f" got {self.rerank_candidates}"
+            )
+        if not self.rerank_timeout_seconds > 0:
+            raise ValueError(f"RERANK_TIMEOUT_SECONDS must be above 0, got {self.rerank_timeout_seconds}")
+        return self
+
+    @property
+    def rewrite_configured(self) -> bool:
+        """The rewriting service is set in `.env` (the model then is too, or the backend would not start)."""
+        return bool(self.rewrite_base_url)
+
+    @property
+    def rerank_configured(self) -> bool:
+        return bool(self.rerank_base_url)
 
     @property
     def chunker_config(self) -> ChunkerConfig:
