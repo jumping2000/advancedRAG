@@ -709,6 +709,202 @@ def fake_rewrite_provider(**modes: Any) -> Iterator[FakeRewriteProvider]:
         server.server_close()
 
 
+# Fake reranker (phase 4, T-03) ---------------------------------------------------------------------------------------
+# A reranker in the format of Hugging Face text-embeddings-inference (`api="tei"`: `POST /rerank` with `{query, texts,
+# truncate}` answered by `[{index, score}]`, health `GET /health`, served at the root) or of Cohere (`api="cohere"`:
+# `POST /v1/rerank` with `{model, query, documents, top_n}` answered by `{results: [{index, relevance_score}]}`, health
+# `GET /v1/models`, served under `/v1`). The scores are given by `scores` (see the field); the answer lists the texts by
+# score, highest first, as the real services do, so a client that reads the position instead of `index` is caught.
+# `python -m tests.fakes.services` (main below) does not serve it; a container serves it with
+# `_Server(("0.0.0.0", port), _RerankHandler, FakeReranker(api=..., scores=...)).serve_forever()`.
+
+
+@dataclass(frozen=True)
+class RerankRequest:
+    """One request as the fake reranker received it (`POST .../rerank`, `GET /health` or `GET /v1/models`)."""
+
+    method: str
+    path: str
+    authorization: str | None
+    body: Any
+
+
+@dataclass
+class FakeReranker:
+    # "tei" or "cohere": the format of the requests and of the answers, and the paths (see the section).
+    api: str = "tei"
+    # The base URL to configure (RERANK_BASE_URL): the root for `tei`, `.../v1` for `cohere`.
+    url: str = ""
+    # Every request received (rerank and health), in arrival order.
+    requests: list[RerankRequest] = field(default_factory=list)
+    # The score of a text: the value of the first key (in insertion order) that the text contains; `default_score` for
+    # a text that holds no key.
+    scores: dict[str, float] = field(default_factory=dict)
+    default_score: float = 0.0
+    # Answer with exactly these items (any JSON values) in place of the computed ones, in the envelope of the format
+    # (the list itself for `tei`, `{"results": items}` for `cohere`): an index out of range, repeated or missing, a
+    # score NaN (`float("nan")` is written as `NaN`), `true` or `"0.5"`.
+    results: Any = None
+    # A text longer than this, in a `tei` request without `truncate: true`, is refused with 413, as
+    # text-embeddings-inference refuses an input over the limit of its model (None: no limit).
+    max_text_chars: int | None = None
+    # Answer this status with a JSON error body instead.
+    fail_status: int | None = None
+    # Answer 200 with exactly this JSON value as the body, instead of the format's answer.
+    json_body: Any = None
+    # Answer 200 with exactly these bytes as the body (`Content-Type: application/json`), instead of the answer.
+    raw_body: bytes | None = None
+    # Close the connection without answering the rerank request.
+    drop_connection: bool = False
+    # Answer every request with `redirect_status` and this `Location` instead.
+    redirect_to: str | None = None
+    redirect_status: int = 302
+    # Wait this long (or until `release` is set) before answering the rerank request.
+    delay_seconds: float = 0.0
+    # Send the status and the headers at once, then wait this long (or until `release` is set) before the body.
+    body_delay_seconds: float = 0.0
+    # The status of `GET /health` (`tei`) and of `GET /v1/models` (`cohere`).
+    health_status: int = 200
+    models_status: int = 200
+    release: threading.Event = field(default_factory=threading.Event, repr=False)
+    # Set when a rerank request arrives.
+    rerank_received: threading.Event = field(default_factory=threading.Event, repr=False)
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def prefix(self) -> str:
+        return "/v1" if self.api == "cohere" else ""
+
+    def reranks(self) -> list[RerankRequest]:
+        return [request for request in self.requests if request.path == f"{self.prefix}/rerank"]
+
+    def texts_sent(self) -> list[list[str]]:
+        """The texts of each rerank request (`texts` for `tei`, `documents` for `cohere`), in arrival order."""
+        name = "documents" if self.api == "cohere" else "texts"
+        return [list(request.body[name]) for request in self.reranks()]
+
+    def score_of(self, text: str) -> float:
+        for key, score in self.scores.items():
+            if key in text:
+                return score
+        return self.default_score
+
+    def answer(self, body: Any) -> Any:
+        """The body of the answer to a rerank request with this body."""
+        if self.results is not None:
+            items = self.results
+        else:
+            texts = body.get("documents" if self.api == "cohere" else "texts", []) if isinstance(body, dict) else []
+            scored = sorted(
+                ((index, self.score_of(str(text))) for index, text in enumerate(texts)), key=lambda x: -x[1]
+            )
+            name = "relevance_score" if self.api == "cohere" else "score"
+            items = [{"index": index, name: score} for index, score in scored]
+        if self.api == "cohere":
+            return {"id": "fake-rerank", "results": items, "meta": {"api_version": {"version": "2"}}}
+        return items
+
+
+class _RerankHandler(_Quiet):
+    server: _Server
+    protocol_version = "HTTP/1.1"
+
+    def _record(self, body: Any) -> FakeReranker:
+        state: FakeReranker = self.server.state
+        with state.lock:
+            state.requests.append(RerankRequest(self.command, self.path, self.headers.get("Authorization"), body))
+        return state
+
+    def _send(
+        self, status: int, payload: bytes, body_delay: float = 0.0, release: threading.Event | None = None
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            if body_delay and release is not None:
+                self.wfile.flush()
+                release.wait(body_delay)
+            self.wfile.write(payload)
+        except OSError:  # the client hung up
+            return
+
+    def _redirect(self, state: FakeReranker) -> None:
+        self.send_response(state.redirect_status)
+        self.send_header("Location", str(state.redirect_to))
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+    def do_GET(self) -> None:  # noqa: N802 (http.server API)
+        state = self._record(None)
+        if state.redirect_to is not None:
+            self._redirect(state)
+        elif state.api == "tei" and self.path == "/health":
+            self._send(state.health_status, b"")
+        elif state.api == "cohere" and self.path == "/v1/models":
+            self._send(state.models_status, json.dumps({"object": "list", "data": [{"id": "fake-rerank"}]}).encode())
+        else:
+            self._send(404, b'{"error": "not found"}')
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server API)
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        try:
+            body: Any = json.loads(raw)
+        except ValueError:
+            body = None
+        state = self._record(body)
+        if state.redirect_to is not None:
+            self._redirect(state)
+            return
+        if self.path != f"{state.prefix}/rerank":
+            self._send(404, b'{"error": "not found"}')
+            return
+        state.rerank_received.set()
+        if state.drop_connection:
+            self.close_connection = True
+            self.connection.shutdown(socket.SHUT_RDWR)
+            return
+        if state.delay_seconds:
+            state.release.wait(state.delay_seconds)
+        if state.fail_status is not None:
+            self._send(state.fail_status, json.dumps({"error": "failure on purpose", "error_type": "fake"}).encode())
+            return
+        if state.api == "tei" and state.max_text_chars is not None and isinstance(body, dict):
+            too_long = any(len(str(text)) > state.max_text_chars for text in body.get("texts", []))
+            if too_long and body.get("truncate") is not True:
+                payload = {"error": "Input validation error: inputs must have less tokens", "error_type": "Validation"}
+                self._send(413, json.dumps(payload).encode())
+                return
+        if state.raw_body is not None:
+            payload_bytes = state.raw_body
+        elif state.json_body is not None:
+            payload_bytes = json.dumps(state.json_body).encode("utf-8")
+        else:
+            payload_bytes = json.dumps(state.answer(body)).encode("utf-8")
+        self._send(200, payload_bytes, state.body_delay_seconds, state.release)
+
+
+@contextmanager
+def fake_reranker(api: str = "tei", **modes: Any) -> Iterator[FakeReranker]:
+    """A fake reranker in the format `api` ("tei" or "cohere") on a free local port; `modes` set the fields of
+    FakeReranker."""
+    state = FakeReranker(api=api, **modes)
+    server = _Server(("127.0.0.1", 0), _RerankHandler, state)
+    state.url = f"http://127.0.0.1:{server.server_address[1]}{state.prefix}"
+    _start(server)
+    try:
+        yield state
+    finally:
+        state.release.set()
+        server.shutdown()
+        server.server_close()
+
+
 def main() -> None:
     dimensions = int(os.environ.get("EMBEDDING_DIMENSIONS") or DEFAULT_DIMENSIONS)
     servers = [
