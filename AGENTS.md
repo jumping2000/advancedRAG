@@ -14,6 +14,8 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 - Single test: `uv run --project backend pytest <path>::<name>` or `npm --prefix frontend run test -- <file>`
 - Local run: `docker compose up --build` (from phase 1); with HTTPS:
   `docker compose -f compose.yaml -f compose.tls.yaml up --build` plus `nginx/certs/cert.pem` and `key.pem`
+- With the reranker (ADR-004): `docker compose --profile rerank up --build`; on a NVIDIA GPU add
+  `-f compose.rerank-gpu.yaml` (one reranker image at a time)
 - Worker of the ingestion queue: Compose service `worker` (`python -m app.worker`)
 - End-to-end tests only (full stack, part of verify): `uv run --directory backend pytest -m e2e`
 - Chromium for the Playwright e2e: `uv run --frozen --directory backend playwright install --with-deps chromium` (CI);
@@ -54,9 +56,10 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
 ## Rules
 - Do not modify: applied database migrations already merged into `main` (`backend/migrations/versions/`): add a new one
 - Sensitive areas: `backend/app/auth/`, `backend/app/documents/` (upload validation, file storage), `backend/app/chat/`
-  (isolation of conversations and sources), `backend/migrations/`, `compose.yaml`, `nginx/`, `.github/workflows/`
-- Dependencies: only those of `docs/adr/ADR-001-toolchain-fase-1.md` and `docs/adr/ADR-002-ingestion.md`; any other is
-  asked first.
+  (isolation of conversations and sources), `backend/app/app_settings/` (admin switches), `backend/migrations/`,
+  `compose.yaml`, `compose.rerank-gpu.yaml`, `nginx/`, `.github/workflows/`
+- Dependencies: only those of `docs/adr/ADR-001-toolchain-fase-1.md`, `docs/adr/ADR-002-ingestion.md` and
+  `docs/adr/ADR-004-rerank-rewrite.md` (reranker image, no new library); any other is asked first.
 - Every behaviour change requires a test, written from the acceptance criteria before the code.
 - Never declare a task completed without having run `python3 scripts/verify.py` successfully.
 - Ambiguity or missing requirements: stop and ask, do not assume.
@@ -69,8 +72,8 @@ Modular monolith: Python + FastAPI backend, RQ worker for ingestion, React + Typ
   content, file names or vectors.
 - Vectors of different indexing profiles never mix: every vector search filters on `profile_id` and uses the profile's HNSW
   expression `embedding::vector(N)`.
-- Automated tests never call the real Ollama, Docling or generation provider (OpenAI-compatible): they use fakes; real
-  services only in opt-in live tests.
+- Automated tests never call the real Ollama, Docling, generation provider, rewriting provider or reranker: they use
+  fakes; real services only in opt-in live tests.
 
 ## Decision rights
 A decision no line names counts as "Asks first". The "Never" list only grows: the plugin's rules apply even if a line is
