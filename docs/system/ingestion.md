@@ -416,8 +416,8 @@ erDiagram
   service.
 - `verify_indexes` counts rows with the BM25 index and an exact-count HNSW query with iterative scan; on a very large `chunks`
   table it may be slow, and a false negative would fail a good document with `verification_failed` (the admin retries).
-- `DOCLING_INCLUDE_IMAGES` is read by the worker only; a switch for it in the interface is deferred to the settings page of
-  phase 4.
+- `DOCLING_INCLUDE_IMAGES` is read by the worker only and stays in `.env`: the Settings page of phase 4 has no switch for it
+  (phase-4 non-scope).
 - A Redis failure right after "Riprova" answers 500 and leaves the document QUEUED without a job: the next start of the
   worker puts it back on the queue (`requeue_pending`); until then it stays "In coda".
 - No re-indexing, no OCR, no download or preview of a document, no paging of the list, no document list for the role `user`
