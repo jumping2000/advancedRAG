@@ -23,6 +23,8 @@ export type MessageOut = {
   notice: string | null;
   created_at: string;
   sources: SourceOut[];
+  /** Phase 4: the searched question of an answer whose question was rewritten; null (or absent) otherwise. */
+  search_query?: string | null;
 };
 
 export type ConversationOut = { id: string; kb_id: string; title: string; created_at: string; updated_at: string };
