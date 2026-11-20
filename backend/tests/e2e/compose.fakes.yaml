@@ -3,7 +3,8 @@
 # It adds the service `fakes` (the fake Ollama on 11434 and the fake Docling on 5001 of backend/tests/fakes/services.py,
 # published on no host port) and points backend and worker at it. The paths are relative to compose.yaml.
 # Phase 3: the backend also gets a generation provider, the fake Ollama's `/v1/models`, so that the `generation` check
-# of GET /api/health is `ok` (no completion is ever requested by these tests).
+# of GET /api/health is `ok` (no completion is ever requested by these tests). Phase 4: the same for `rewrite` and
+# `rerank` (both switches stay off, so no question goes to them).
 # The chat UI test (test_chat_ui.py) starts the profile `generation` and sets E2E_GENERATION_URL: the service
 # `generation` is then the provider of the backend, a fake that streams the steps of E2E_GENERATION_SCRIPT, a JSON list
 # where a string is a fragment of text and a number is a pause in seconds before the next one.
@@ -29,6 +30,13 @@ services:
       DOCLING_BASE_URL: http://fakes:5001
       GENERATION_BASE_URL: ${E2E_GENERATION_URL:-http://fakes:11434/v1}
       GENERATION_MODEL: fake-model
+      # Phase 4: the rewriting service and the reranker (cohere format, checked with GET /models) are the fake Ollama's
+      # `/v1/models` too, so that their checks of GET /api/health are `ok`; the switches stay off, nothing else is sent
+      REWRITE_BASE_URL: http://fakes:11434/v1
+      REWRITE_MODEL: fake-model
+      RERANK_BASE_URL: http://fakes:11434/v1
+      RERANK_API: cohere
+      RERANK_MODEL: fake-model
     depends_on:
       fakes:
         condition: service_healthy

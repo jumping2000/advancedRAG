@@ -8,6 +8,10 @@ heartbeat key before and after each test. The tests of phase 1 that this spec re
 Revised for phase 3 (its REQ-002): `checks` also has `generation`. The two tests that assert the whole body or the
 overall status configure a fake generation provider (`generation: "ok"`), so that, as before, the worker alone decides
 whether the status is `ok` or `degraded`.
+
+Revised for phase 4 (SPEC-2026-11-20-fase-4-rerank-rewrite, REQ-011): `checks` also has `rewrite` and `rerank`. The same
+two tests point both services at the fake Ollama, which answers 200 on every path (`GET /models` of the rewriting
+service, `GET /health` of a `tei` reranker), so that the worker still alone decides the status.
 """
 
 from __future__ import annotations
@@ -59,6 +63,9 @@ async def test_AC_002_no_worker_gives_200_degraded_and_worker_unreachable(
             docling_base_url=docling,
             generation_base_url=provider.url,
             generation_model="fake-model",
+            rewrite_base_url=ollama,
+            rewrite_model="fake-model",
+            rerank_base_url=ollama,
         )
         async with client_for(settings) as client:
             response = await client.get("/api/health")
@@ -73,6 +80,8 @@ async def test_AC_002_no_worker_gives_200_degraded_and_worker_unreachable(
             "docling": "ok",
             "worker": "unreachable",
             "generation": "ok",
+            "rewrite": "ok",
+            "rerank": "ok",
         },
     }
 
@@ -88,6 +97,9 @@ async def test_AC_001_a_heartbeat_key_makes_the_worker_ok_and_the_status_ok(
             docling_base_url=docling,
             generation_base_url=provider.url,
             generation_model="fake-model",
+            rewrite_base_url=ollama,
+            rewrite_model="fake-model",
+            rerank_base_url=ollama,
         )
         async with client_for(settings) as client:
             response = await client.get("/api/health")

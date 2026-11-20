@@ -205,6 +205,8 @@ def test_AC_001_health_shows_the_worker_ok(stack: Path) -> None:
             "docling": "ok",
             "worker": "ok",
             "generation": "ok",  # phase 3: compose.fakes.yaml points GENERATION_BASE_URL at the fake's /v1/models
+            "rewrite": "ok",  # phase 4: compose.fakes.yaml points REWRITE_BASE_URL and RERANK_BASE_URL at it too
+            "rerank": "ok",
         },
     }
 
