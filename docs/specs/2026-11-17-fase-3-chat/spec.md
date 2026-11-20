@@ -332,5 +332,9 @@ non assegnata; `python3 scripts/verify.py` e la CI sono verdi.
 - Dataset e metriche per valutare retrieval, fusione RRF e qualità delle risposte in italiano e inglese (fase 4) — blocking: no
 
 ## Revisions
+- 2026-11-20: la fase 4 (`docs/specs/2026-11-20-fase-4-rerank-rewrite/spec.md`) rivede REQ-002 (controlli `rewrite` e
+  `rerank` in `GET /api/health`), REQ-006 (con il reranker attivo l'ordine del contesto è quello del reranker), REQ-016
+  («Riprova» ripete anche riscrittura e reranking) e REQ-103 (destinazioni ammesse `REWRITE_BASE_URL` e
+  `RERANK_BASE_URL`, solo con i passi attivi). Con i passi spenti la fase 3 resta invariata.
 - 2026-11-17 (seconda): REQ-006 precisa che dalla cronologia esce per intero ogni scambio la cui risposta non è completata con del testo (anche quello `no_documents`, risposta vuota) e ogni domanda senza risposta, così i ruoli si alternano sempre (decisione dell'owner alla seconda review di T-03); AC-021 dice che il titolo non ha spazi finali dopo il taglio, come già REQ-011.
 - 2026-11-17: durante T-03 il reviewer e l'owner hanno deciso due punti che la spec lasciava aperti. REQ-006/AC-012: la cronologia inviata al provider esclude l'intero scambio fallito, domanda compresa, per avere ruoli alternati con tutti i provider (prima: solo la risposta fallita). REQ-015 e nuovo AC-048: un guasto interno imprevisto è riportato con il codice `internal_error` e non con `generation_error`. REQ-011: il titolo non ha spazi finali dopo il taglio a 80 caratteri. Il piano segue: AC-048 è coperto da T-03.
