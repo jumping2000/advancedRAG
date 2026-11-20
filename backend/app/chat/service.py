@@ -6,8 +6,8 @@ by a blank line (the JSON is ASCII: a line break or U+2028 in a text never split
 - `conversation` `{"conversation_id", "message_id"}`, at once; the message is the (PENDING) answer;
 - `delta` `{"text"}`, one per fragment of the provider, as it arrives;
 - `done` `{"message": MessageOut}`, last, after the answer is saved COMPLETED (with the text cleaned of the citations
-  that are not sources, and the cited sources only); a KB with nothing to search gets `done` at once, with the notice
-  `no_documents` and no call to Ollama or to the provider;
+  that are not sources, the cited sources only, and the `search_query` of phase 4); a KB with nothing to search gets
+  `done` at once, with the notice `no_documents` and no call to Ollama or to the provider;
 - `error` `{"error": {"code", "message"}}`, last, after the answer is saved FAILED, with `code` in
   `embedding_error`, `generation_error`, `generation_timeout`; any other exception (the database, the creation of the
   profile, anything not foreseen) is saved and sent as `internal_error`;
@@ -33,6 +33,15 @@ gone. A delete that arrives before the stream has started finds nothing to cance
 its answer is still PENDING (a deleted or settled answer is not started: `_Stopped`), and the route cancels again after
 it has deleted, which catches a task that registered in between. A task cancelled before its first step still ends the
 stream (the done callback of the task, not the task itself, tells the stream).
+
+Phase 4 (SPEC-2026-11-20-fase-4-rerank-rewrite). The answer reads the switches of the two steps once, when it starts,
+and keeps them to the end (REQ-003): a step is active when it is switched on and its service is configured. With the
+rewriting active and a history that is not empty (the rules of phase 3), the question is rewritten into a standalone one
+(`QuestionRewriter`) before the search; the rewritten text is searched (vector and BM25), the model still gets the
+original question, and the answer saves it as `search_query` when it differs from the question (`strip().casefold()`).
+A rewriting that fails falls back on the original question, and the answer goes on (REQ-006). The line `chat rewrite
+<ids> used=<true|false> reason=<reason|none> ms=<n>` is logged when the service was asked, never with a text (REQ-101);
+with the step off nothing changes from phase 3 (REQ-103).
 """
 
 from __future__ import annotations
@@ -51,10 +60,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
+from app.app_settings.repository import AppSettingsRepository, active_steps
 from app.chat.generation import GenerationError, OpenAICompatibleClient
 from app.chat.prompt import build_messages, clean_citations
 from app.chat.repository import ConversationRepository
 from app.chat.retrieval import Candidate, bm25_search, dense_search, fuse, has_searchable_chunks, load_candidates
+from app.chat.rewrite import QuestionRewriter, RewriteError
 from app.chat.schemas import MessageOut, SourceOut
 from app.config import Settings
 from app.db.models import Conversation, IndexingProfile, Message, User
@@ -319,6 +330,9 @@ async def _answer(
         still_wanted = await ConversationRepository(session).is_pending(answer.id)
     if not still_wanted:  # the conversation was deleted (or the answer settled) before this task took its first step
         raise _Stopped
+    async with sessions() as session:  # once: the answer keeps this state to its end (REQ-003)
+        switches = await AppSettingsRepository(session).switches()
+    _rerank_active, rewrite_active = active_steps(settings, switches)
     profile = await active_profile(app)
 
     async with sessions() as session:
@@ -329,15 +343,19 @@ async def _answer(
             yield done
         return
 
-    vector = await _embed(settings, profile, question)
     async with sessions() as session:
-        dense_ids = await dense_search(session, user, kb_id, profile, vector, settings.retrieval_candidates)
-        bm25_ids = await bm25_search(session, user, kb_id, profile.id, question, settings.retrieval_candidates)
-        ranked = fuse(dense_ids, bm25_ids, settings.rrf_k)[: settings.chat_context_chunks]
-        candidates = await load_candidates(session, user, kb_id, profile.id, ranked)
         history = await ConversationRepository(session).history(
             conversation, settings.chat_history_messages, before=user_message
         )
+    searched, search_query = await _search_text(settings, question, history, rewrite_active, ids)
+    vector = await _embed(settings, profile, searched)
+    async with sessions() as session:
+        dense_ids = await dense_search(session, user, kb_id, profile, vector, settings.retrieval_candidates)
+        bm25_ids = await bm25_search(session, user, kb_id, profile.id, searched, settings.retrieval_candidates)
+        fused = fuse(dense_ids, bm25_ids, settings.rrf_k)
+        # The reranker (T-03) reorders the first candidates of `fused` here, with `searched` as its query
+        ranked = fused[: settings.chat_context_chunks]
+        candidates = await load_candidates(session, user, kb_id, profile.id, ranked)
     logger.info(
         "chat retrieval %s dense=%d bm25=%d context=%d history=%d ms=%d",
         ids,
@@ -370,9 +388,37 @@ async def _answer(
     text, cited_numbers = clean_citations("".join(parts), len(candidates))
     cited = set(cited_numbers)
     context = [(number, candidate, number in cited) for number, candidate in enumerate(candidates, start=1)]
-    done = await _finish(sessions, answer.id, text, None, context, ids, started)
+    done = await _finish(sessions, answer.id, text, None, context, ids, started, search_query)
     if done is not None:
         yield done
+
+
+async def _search_text(
+    settings: Settings, question: str, history: Sequence[Message], active: bool, ids: str
+) -> tuple[str, str | None]:
+    """The text to search and the `search_query` to save: the rewritten question when the rewriting is active, the
+    history is not empty and the service gives a usable text (saved only when it differs from the question, without the
+    spaces at both ends and the case); the question and None otherwise. Only the ids, the use, the reason and the time
+    are logged, never a text (REQ-101)."""
+    if not active or not history:
+        return question, None
+    key = settings.rewrite_api_key.get_secret_value() if settings.rewrite_api_key else None
+    rewriter = QuestionRewriter(
+        settings.rewrite_base_url,
+        settings.rewrite_model,
+        key,
+        settings.rewrite_timeout_seconds,
+        max_chars=settings.chat_max_question_chars,
+    )
+    started = time.monotonic()
+    try:
+        rewritten = await rewriter.rewrite(question, history)
+    except RewriteError as error:
+        logger.warning("chat rewrite %s used=false reason=%s ms=%d", ids, error.reason, _elapsed_ms(started))
+        return question, None
+    logger.info("chat rewrite %s used=true reason=none ms=%d", ids, _elapsed_ms(started))
+    changed = rewritten.strip().casefold() != question.strip().casefold()
+    return rewritten, rewritten if changed else None
 
 
 async def _embed(settings: Settings, profile: IndexingProfile, question: str) -> list[float]:
@@ -395,11 +441,14 @@ async def _finish(
     context: Sequence[tuple[int, Candidate, bool]],
     ids: str,
     started: float,
+    search_query: str | None = None,
 ) -> str | None:
     """Save the answer as COMPLETED (in a new session) and return its `done` event; None if it is no longer PENDING
     (the conversation was deleted meanwhile): then nothing more is sent."""
     async with sessions() as session:
-        message = await ConversationRepository(session).complete_answer(answer_id, content, notice, context)
+        message = await ConversationRepository(session).complete_answer(
+            answer_id, content, notice, context, search_query=search_query
+        )
     if message is None:
         logger.warning("chat answer %s: not saved, it is no longer pending", ids)
         return None

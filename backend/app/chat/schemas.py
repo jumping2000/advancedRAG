@@ -1,7 +1,9 @@
 """Bodies of the chat API (SPEC-2026-11-17-fase-3-chat): the question, and the message that the `done` event carries.
 
 `MessageOut.sources` holds only the sources the answer cites; the excerpt of a source is never part of a message
-(REQ-010): `SourceOut` has the metadata saved with the answer, not the content of the chunk."""
+(REQ-010): `SourceOut` has the metadata saved with the answer, not the content of the chunk. `MessageOut.search_query`
+(SPEC-2026-11-20-fase-4-rerank-rewrite, REQ-007) is the question that was searched when the rewriting changed it, else
+null (always null for a question)."""
 
 from __future__ import annotations
 
@@ -47,6 +49,7 @@ class MessageOut(BaseModel):
     notice: str | None
     created_at: datetime
     sources: list[SourceOut]
+    search_query: str | None
 
     @classmethod
     def from_message(cls, message: Message, sources: Sequence[SourceOut] = ()) -> MessageOut:
@@ -59,6 +62,7 @@ class MessageOut(BaseModel):
             notice=message.notice,
             created_at=message.created_at,
             sources=list(sources),
+            search_query=message.search_query,
         )
 
 
