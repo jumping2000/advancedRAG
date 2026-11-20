@@ -1,6 +1,6 @@
 # SPEC-2026-11-20-fase-4-rerank-rewrite: Fase 4 – Reranker, riscrittura della domanda e impostazioni
 
-- Status: approved
+- Status: implemented
 - Owner: jumping2000
 
 ## Problem and goal

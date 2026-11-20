@@ -1,7 +1,7 @@
 # Area: chat (hybrid retrieval, streamed answers, conversations)
 
 - Last aligned: 2026-11-20
-- Linked specs: SPEC-2026-11-17-fase-3-chat, SPEC-2026-11-20-fase-4-rerank-rewrite (in progress: T-02, the rewriting; T-03, the reranker)
+- Linked specs: SPEC-2026-11-17-fase-3-chat, SPEC-2026-11-20-fase-4-rerank-rewrite
 
 ## Current behaviour
 A user opens a knowledge base (KB) they are assigned to, asks a question in Italian or English and reads the answer while
@@ -12,7 +12,11 @@ stack-level facts (Compose services, Nginx, health, login, users, KBs and their 
 [fondazioni.md](fondazioni.md); the chunks, vectors and indexes the chat reads are in [ingestion.md](ingestion.md). This
 page is the chat as a whole. There is no new service and no new dependency (ADR-003): the generation runs inside the HTTP
 request of the question, in the one uvicorn process of the `backend`, and the browser reads it with `fetch` and a
-`ReadableStream` (not `EventSource`, which cannot send a body).
+`ReadableStream` (not `EventSource`, which cannot send a body). Since phase 4 (ADR-004) two optional steps can run before
+the generation: the rewriting of a follow-up question into a standalone one, used only for the search and shown under the
+answer as «Ricerca: …», and a reranker that reorders the first candidates of the fusion. The admin switches each on and off
+from the page «Impostazioni» (described in [fondazioni.md](fondazioni.md)); with both off, or their services not configured
+in `.env`, the chat is the one of phase 3.
 
 **A question** (`POST /api/kbs/{kb_id}/conversations` starts a conversation with its first question, `POST
 /api/conversations/{id}/messages` asks in an existing one, `POST /api/conversations/{id}/messages/{message_id}/retry`
@@ -38,8 +42,9 @@ kept in `app.state`). Every statement that reads `chunks` carries, in the same S
 (`KnowledgeBaseRepository.visible_kb_ids(user)`: everything for the admin, `kb_members` for a `user`), `kb_id`, the join on
 `documents.status = 'READY'` and `profile_id`. If the KB has no such chunk the answer is completed at once with the notice
 `no_documents` and empty text, with no call to Ollama or to the provider. Otherwise:
-1. the question is embedded with `OllamaEmbedder` and the model of the active profile (Ollama is the only destination of the
-   question besides the provider);
+1. the searched question (the question itself, or its rewritten form when the rewriting below was used) is embedded with
+   `OllamaEmbedder` and the model of the active profile; the destinations of the chat content are listed at the end of «The
+   reranker» below;
 2. `dense_search`: `ORDER BY (embedding::vector(N)) <=> CAST(:v AS vector(N)) LIMIT RETRIEVAL_CANDIDATES`, with the
    expression of `embedding_expression(profile)` and `WHERE profile_id = :p`, so that the partial HNSW index of the profile is
    used; the transaction sets `hnsw.iterative_scan = relaxed_order`, `hnsw.max_scan_tuples = 200000` and `hnsw.ef_search =
@@ -195,6 +200,11 @@ conversazione», open, «Rinomina» with «Salva»/«Annulla», «Elimina» with
   excerpt is a `<blockquote>` toggled by the citation and by the «Mostra estratto» button of the source, and read again each
   time it opens. `readOnly` hides «Riprova» only; the excerpts still open. `read_only` of `ConversationDetail` is not read by
   the component: the caller passes `readOnly`.
+- Under an answer whose `search_query` is not empty, after its text and before its sources, `ConversationView` shows
+  `chat.searchQuery`: «Ricerca: <searched question>» in Italian, «Search: <searched question>» in English, as text; nothing
+  when `search_query` is null or empty (and nothing for a `MessageOut` without the field, such as the placeholder of an
+  answer being streamed: the line appears with the `done` event). The chat and the page «Conversazioni» both show it, since
+  both use `ConversationView`. The frontend type is `MessageOut.search_query?: string | null`.
 
 **The admin page «Conversazioni»** (`/admin/conversations`, `ConversationsPage`, menu "Conversazioni"/"Conversations", admin
 only: a `user` has no link and the route sends them to `/`, no session to `/login`; the backend refuses with 403 on its own).
@@ -216,13 +226,27 @@ Provider: `GENERATION_BASE_URL` (empty: not configured; an http or https URL wit
 2xx within `HEALTH_CHECK_TIMEOUT_SECONDS`), `unreachable` or `not_configured` (no request is sent); a stack without a provider
 is therefore `degraded`.
 
+Rewriting and reranker (phase 4, backend only): `REWRITE_BASE_URL`, `REWRITE_MODEL`, `REWRITE_API_KEY`,
+`REWRITE_TIMEOUT_SECONDS` (30), `RERANK_BASE_URL`, `RERANK_API` (`tei` or `cohere`), `RERANK_MODEL`, `RERANK_API_KEY`,
+`RERANK_CANDIDATES` (20), `RERANK_TIMEOUT_SECONDS` (15); their checks are in [fondazioni.md](fondazioni.md). The switches are
+the row of `app_settings`, changed from the page «Impostazioni» or `PUT /api/admin/settings`; `GET /api/health` shows
+`checks.rewrite` and `checks.rerank`, which depend on the configuration, not on the switches.
+
 ### End-to-end tests of the area
-Both use the full Compose stack through Nginx, their own project name and host port, and `down -v` at the end; the stack is
+The three use the full Compose stack through Nginx, their own project name and host port, and `down -v` at the end; the stack is
 `compose.yaml` plus `backend/tests/e2e/compose.fakes.yaml` and its profile `generation`: a service that serves the fake provider
 of `backend/tests/fakes/services.py` with the steps of `E2E_GENERATION_SCRIPT` (a JSON list: a string is a fragment of text, a
 number a pause in seconds) at `E2E_GENERATION_URL=http://generation:8080/v1`. `test_chat_ui.py` (project
 `advancedrag-e2e-chatui`, port 18680, script of 90 s) proves that each fragment reaches the browser within 2 s through Nginx;
 `test_conversations_ui.py` (project `advancedrag-e2e-convui`, port 18780, a fast script) proves the admin page.
+`test_settings_ui.py` (phase 4, project `advancedrag-e2e-settingsui`, port 18880) also starts the profiles `rewrite` and
+`rerank` of `compose.fakes.yaml`: the service `rewrite` is a fake rewriting service (`E2E_REWRITE_URL=http://rewrite:8080/v1`,
+the answer in `E2E_REWRITE_ANSWER`) and the `reranker` of the Compose is replaced in its own profile by a fake in the `tei`
+format on port 80 (`E2E_RERANK_URL=http://reranker`, `E2E_RERANK_API=tei`, the scores in `E2E_RERANK_SCORES`, a JSON object
+whose first key contained in a text gives its score), so nothing is downloaded. Without these variables the backend keeps the
+fake Ollama's `/v1/models` for the two services, both configured and both switched off. The admin switches both steps on from
+the page «Impostazioni» through Nginx, asks a first question and a follow-up one, and the follow-up answer shows «Ricerca: …»
+with the rewritten text and its sources in the order of the fake reranker (chosen to differ from the RRF order).
 
 ## Interfaces
 | Method and path | Who | Success | Errors |
@@ -238,89 +262,112 @@ number a pause in seconds) at `E2E_GENERATION_URL=http://generation:8080/v1`. `t
 | `GET /api/admin/conversations?kb_id=&user_id=` | admin | 200 `[AdminConversationOut]` | 403 `forbidden` |
 
 Provider: `POST {GENERATION_BASE_URL}/chat/completions` with `stream: true` (`model`, `messages`), `GET {GENERATION_BASE_URL}/models`
-for the health check. Ollama is called only to embed the question.
+for the health check. Ollama is called only to embed the searched question. Phase 4: the rewriting service, `POST
+{REWRITE_BASE_URL}/chat/completions` with `stream: false` (`model`, `messages`) answered by `choices[0].message.content`, `GET
+{REWRITE_BASE_URL}/models` for the health check; the reranker, `POST {RERANK_BASE_URL}/rerank` (`tei`: `{query, texts,
+truncate: true}` → `[{index, score}]`, health `GET /health`; `cohere`: `{model, query, documents, top_n}` → `{results: [{index,
+relevance_score}]}`, health `GET /models`). The switches: `GET` and `PUT /api/admin/settings` (admin), in
+[fondazioni.md](fondazioni.md).
 
 ## Diagrams
 
 ### Flowchart
 ```mermaid
 flowchart TD
-    A[POST question] --> B{Session and KB visible?}
-    B -- no --> B1[404 conversation_not_found / kb_not_found]
-    B -- yes --> C{Admin writing on another user's conversation?}
-    C -- yes --> C1[403 forbidden]
-    C -- no --> D{Question 1..CHAT_MAX_QUESTION_CHARS after trim?}
-    D -- no --> D1[422 validation_error, nothing saved]
-    D -- yes --> E{GENERATION_BASE_URL set?}
-    E -- no --> E1[503 generation_not_configured]
-    E -- yes --> F[Save user message + PENDING answer]
-    F -- unique index messages_one_pending --> F1[409 answer_in_progress]
-    F --> G{Searchable chunks: READY, active profile?}
-    G -- no --> G1[Complete with notice no_documents, no external call]
-    G -- yes --> H[Embed question with Ollama]
-    H -- error --> X[fail_answer embedding_error, event error]
-    H --> I[dense_search + bm25_search, filtered on KB, READY, profile]
-    I --> J[fuse RRF k=60, top CHAT_CONTEXT_CHUNKS]
-    J --> K[build_messages: sources + last 6 completed messages]
-    K --> L[Stream from provider, event delta per fragment, keepalive every 15 s]
-    L -- timeout --> X2[fail_answer generation_timeout]
-    L -- unreachable / non 2xx / broken stream --> X3[fail_answer generation_error]
-    L -- unexpected internal failure --> X5[fail_answer internal_error]
-    L -- client disconnects or conversation deleted --> X4[fail_answer interrupted or stop]
-    L -- DONE --> M[clean_citations: drop n out of range]
-    M --> N[complete_answer: text + sources with ranks and scores]
-    N --> O[event done with MessageOut]
+    A[POST question, or retry of the last failed answer] --> B{"Session, KB visible, author or admin rules?"}
+    B -- no --> B1["401 / 404 conversation_not_found or kb_not_found / 403 forbidden"]
+    B -- yes --> D{"Question valid and GENERATION_BASE_URL set?"}
+    D -- no --> D1["422 validation_error / 503 generation_not_configured"]
+    D -- yes --> F["start_answer or restart_answer: PENDING answer, search_query null"]
+    F -- messages_one_pending taken --> F1[409 answer_in_progress]
+    F --> S["Read the switches once: active_steps = switched on and configured"]
+    S --> G{"has_searchable_chunks: READY, active profile?"}
+    G -- no --> G1[Complete with notice no_documents, no call to any service]
+    G -- yes --> RW{"Rewriting active and filtered history not empty?"}
+    RW -- no --> Q0[Searched = the question]
+    RW -- yes --> RC[QuestionRewriter.rewrite]
+    RC -- RewriteError --> Q0
+    RC -- text --> Q1["Searched = rewritten text; search_query if it differs by strip().casefold()"]
+    Q0 --> E["OllamaEmbedder, dense_search and bm25_search with the searched text, fuse RRF, load_candidates"]
+    Q1 --> E
+    E -- Ollama error --> X1[fail_answer embedding_error, event error]
+    E --> RR{"Reranker active and at least 2 of the first RERANK_CANDIDATES?"}
+    RR -- no --> C0[RRF order]
+    RR -- yes --> RK[RerankClient.scores]
+    RK -- RerankError --> C0
+    RK -- scores --> C1[rerank_order]
+    C0 --> K["First CHAT_CONTEXT_CHUNKS; build_messages with the ORIGINAL question"]
+    C1 --> K
+    K --> L["Stream from the provider: event delta per fragment, keepalive every 15 s"]
+    L -- timeout, error, unexpected, client gone --> X2["fail_answer generation_timeout, generation_error, internal_error or interrupted"]
+    L -- end --> M["clean_citations, complete_answer with sources and search_query, event done"]
 ```
 
 ### Sequence diagram
 ```mermaid
 sequenceDiagram
+    actor Ad as Admin (SettingsPage)
     actor B as Browser (ChatPage)
-    participant N as Nginx
-    participant R as chat routes
-    participant S as answer_events (task)
+    participant API as FastAPI routes (through Nginx)
+    participant S as answer task
     participant DB as PostgreSQL
+    participant RW as Rewriting service
     participant OL as Ollama
+    participant RK as Reranker
     participant G as Generation provider
-    participant A as ActiveAnswers
-    B->>N: POST /api/kbs/id/conversations {question}
-    N->>R: proxy (no buffering)
-    R->>DB: create conversation, save question + PENDING answer
-    R-->>B: 200 text/event-stream, event conversation
-    R->>S: AnswerResponse starts the task
-    S->>A: register(conversation_id, task)
-    S->>DB: has_searchable_chunks (short session)
-    S->>OL: embed the question
-    S->>DB: dense_search, bm25_search, load_candidates, history
-    S->>G: POST /chat/completions stream
+    Ad->>API: PUT /api/admin/settings {"rewrite_enabled": true}
+    alt service not configured
+        API-->>Ad: 409 service_not_configured, the switch goes back
+    else configured
+        API->>DB: AppSettingsRepository.update
+        API-->>Ad: 200 SettingsOut
+    end
+    B->>API: POST /api/conversations/id/messages {question}
+    API->>DB: lock the conversation, save the question and the PENDING answer
+    API-->>B: 200 text/event-stream, event conversation
+    API->>S: AnswerResponse starts the task, registered in ActiveAnswers
+    S->>DB: switches(), has_searchable_chunks, history (short sessions)
+    opt rewriting active and history not empty
+        S->>RW: POST /chat/completions, stream false, history and question
+        RW-->>S: standalone question, or an error or timeout: the question is kept
+    end
+    S->>OL: POST /api/embed with the searched text
+    S->>DB: dense_search, bm25_search, load_candidates
+    opt reranker active and at least 2 candidates
+        S->>RK: POST /rerank with the searched text and the contents
+        RK-->>S: scores, or an error or timeout: the RRF order is kept
+    end
+    S->>G: POST /chat/completions, stream true, context and original question
     loop each fragment, and a keepalive after 15 s of silence
         G-->>S: delta
-        S-->>B: event delta (or : keepalive)
+        S-->>B: event delta
     end
-    S->>DB: complete_answer (text, sources) in a new session
-    S-->>B: event done {message}
-    B->>R: GET /conversations/id/messages/mid/sources/n
-    R->>DB: chunk of the KB of the conversation (LEFT JOIN)
-    R-->>B: SourceExcerpt
-    B->>R: DELETE /conversations/id (author or admin)
-    R->>A: cancel (twice: before and after the delete)
-    A->>S: cancel task, provider connection closed
-    R->>DB: lock conversation row, delete messages and sources
-    R-->>B: 204
+    S->>DB: complete_answer (text, sources, search_query) in a new session
+    S-->>B: event done {message with search_query}
+    B->>B: ConversationView shows «Ricerca: …» under the answer
+    B->>API: DELETE /conversations/id (author or admin)
+    API->>S: cancel through ActiveAnswers, before and after the delete
+    API-->>B: 204
 ```
 
 ### State diagram
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: question saved with its answer
-    PENDING --> COMPLETED: complete_answer (also with notice no_documents)
-    PENDING --> FAILED: embedding_error, generation_error, generation_timeout, internal_error
-    PENDING --> FAILED: client left or conversation deleted, interrupted
-    PENDING --> FAILED: backend restarted, mark_interrupted
-    FAILED --> PENDING: retry of the last answer
-    COMPLETED --> [*]: conversation deleted
-    FAILED --> [*]: conversation deleted
-    PENDING --> [*]: conversation deleted
+    state "Answer (messages.status)" as Answer {
+        [*] --> PENDING: question saved with its answer
+        PENDING --> COMPLETED: complete_answer, with search_query when rewritten (also notice no_documents)
+        PENDING --> FAILED: embedding_error, generation_error, generation_timeout, internal_error
+        PENDING --> FAILED: client left, conversation deleted, or backend restarted (interrupted)
+        FAILED --> PENDING: retry of the last answer, search_query back to null
+        COMPLETED --> [*]: conversation deleted
+        FAILED --> [*]: conversation deleted
+    }
+    state "Switch of a step (app_settings, rewrite_enabled or rerank_enabled)" as Switch {
+        [*] --> Off: migration 0006
+        Off --> On: PUT true, service configured
+        Off --> Off: PUT true, service not configured (409, nothing saved)
+        On --> Off: PUT false (always allowed)
+    }
 ```
 
 ### Class diagram
@@ -330,78 +377,79 @@ classDiagram
         +start_conversation(kb_id, question)
         +ask_in_conversation(conversation_id, question)
         +retry_answer(conversation_id, message_id)
-        +list_conversations(kb_id)
         +read_conversation(conversation_id)
-        +rename_conversation(conversation_id, title)
         +delete_conversation(conversation_id)
         +read_source(conversation_id, message_id, number)
         +list_all_conversations(kb_id, user_id)
     }
+    class SettingsRoutes {
+        +read_settings() SettingsOut
+        +update_settings(body) SettingsOut
+    }
+    class AppSettingsRepository {
+        +switches() Switches
+        +update(rerank_enabled, rewrite_enabled) Switches
+    }
+    class Switches {
+        +rerank_enabled: bool
+        +rewrite_enabled: bool
+    }
     class ConversationRepository {
         +list_for(user, kb_id)
         +get_for(user, conversation_id)
-        +get_for_admin(conversation_id)
         +start_answer(conversation, question)
         +restart_answer(conversation, message_id)
-        +complete_answer(message_id, content, notice, sources)
+        +complete_answer(message_id, content, notice, sources, search_query)
         +fail_answer(message_id, code) bool
         +history(conversation, limit, before)
-        +excerpt(conversation, message_id, number)
-        +list_all(kb_id, user_id)
-        +mark_interrupted() int
-    }
-    class AnswerResponse {
-        +abandon()
     }
     class answer_events {
         +answer_events(request, user, conversation, user_message, answer)
     }
-    class ActiveAnswers {
-        +register(conversation_id, task)
-        +cancel(conversation_id) bool
+    class QuestionRewriter {
+        +rewrite(question, history) str
+    }
+    class RerankClient {
+        +scores(query, texts) list~float~
+    }
+    class rerank {
+        +rerank_order(candidates, scores) list~Candidate~
     }
     class retrieval {
         +dense_search(...)
         +bm25_search(...)
         +fuse(dense, bm25, k) list~Ranked~
         +load_candidates(...) list~Candidate~
-        +has_searchable_chunks(...) bool
-    }
-    class prompt {
-        +build_messages(question, candidates, history)
-        +clean_citations(text, count)
     }
     class OpenAICompatibleClient {
         +stream(messages) AsyncIterator~str~
-        +check(timeout) str
     }
     class OllamaEmbedder {
         +embed(texts) list
     }
-    class KnowledgeBaseRepository {
-        +visible_kb_ids(user) Select
+    class ActiveAnswers {
+        +register(conversation_id, task)
+        +cancel(conversation_id) bool
     }
-    class Conversation
-    class Message
-    class MessageSource
-    class ConversationsPage
-    class ChatPage
     class ConversationView
-    ChatRoutes ..> ConversationRepository
-    ChatRoutes ..> AnswerResponse : streams
-    AnswerResponse ..> answer_events : body of the response
-    answer_events ..> ActiveAnswers : registers the task, through _with_keepalive
+    class SettingsPage
+    class ChatPage
+    class ConversationsPage
+    SettingsRoutes ..> AppSettingsRepository
+    AppSettingsRepository ..> Switches
+    answer_events ..> AppSettingsRepository : switches, once per answer
+    answer_events ..> QuestionRewriter : rewriting active
+    answer_events ..> RerankClient : reranker active
+    answer_events ..> rerank
     answer_events ..> retrieval
-    answer_events ..> prompt
-    answer_events ..> OpenAICompatibleClient
     answer_events ..> OllamaEmbedder
+    answer_events ..> OpenAICompatibleClient
     answer_events ..> ConversationRepository : complete_answer, fail_answer
+    answer_events ..> ActiveAnswers : registers the task
+    ChatRoutes ..> ConversationRepository
+    ChatRoutes ..> answer_events : streams
     ChatRoutes ..> ActiveAnswers : cancel on delete
-    retrieval ..> KnowledgeBaseRepository : visible_kb_ids
-    ConversationRepository ..> KnowledgeBaseRepository : visible_kb_ids
-    ConversationRepository ..> Conversation
-    ConversationRepository ..> Message
-    ConversationRepository ..> MessageSource
+    SettingsPage ..> SettingsRoutes : GET and PUT
     ChatPage ..> ConversationView
     ConversationsPage ..> ConversationView : readOnly
     ChatPage ..> ChatRoutes : HTTP and SSE
@@ -432,6 +480,7 @@ erDiagram
         text status "PENDING, COMPLETED or FAILED"
         text error_code
         text notice "no_documents"
+        text search_query "phase 4, null unless rewritten and different"
         timestamptz created_at
     }
     message_sources {
@@ -444,8 +493,14 @@ erDiagram
         int page_end
         int dense_rank
         int bm25_rank
-        float score
+        float score "RRF score, also with the reranker"
         bool cited
+    }
+    app_settings {
+        smallint id PK "check id = 1, one row"
+        bool rerank_enabled "default false"
+        bool rewrite_enabled "default false"
+        timestamptz updated_at
     }
 ```
 
@@ -461,7 +516,11 @@ erDiagram
   expression, so the partial HNSW index is used (AC-008 checks it with 60 chunks of another profile).
 - Migration `0005_conversations` is applied and never edited: a change is a new migration; its `downgrade` drops the three
   tables.
-- Automated tests never call the real Ollama, Docling or generation provider: they use the fakes of `backend/tests/fakes/`.
+- Automated tests never call the real Ollama, Docling, generation provider, rewriting service or reranker: they use the fakes
+  of `backend/tests/fakes/` (`FakeRewriteProvider`, `FakeReranker`); the `reranker` service of the Compose is checked only with
+  `docker compose config` (`test_compose_reranker.py`) and replaced by a fake in the e2e.
+- `messages.search_query` and `app_settings` come from migration `0006_rerank_rewrite`, applied and never edited: its
+  `downgrade` drops the column and the table.
 - Logs (REQ-102): ids, counts, durations, codes and the type of an exception; never a question, answer, title, chunk, file name,
   vector or the key (`tests/test_chat_logging_privacy.py`); in phase 4 never the rewritten question, a text sent to the reranker,
   a score of the reranker or `REWRITE_API_KEY`/`RERANK_API_KEY` (`tests/test_chat_steps_privacy.py`).
@@ -496,29 +555,60 @@ erDiagram
 - `spec.md` still says `@@@` for the BM25 operator in its Constraints text; the code uses `|||` (see The retrieval above). This
   page is the source of truth: a task does not change the spec.
 - No evaluation, no export, search or paging of the conversations, no feedback on the
-  answers, no provider other than OpenAI-compatible (spec non-scope).
+  answers, no provider other than OpenAI-compatible (spec non-scope). Phase 4 non-scope: no evaluation of the two steps, no
+  switch per KB or per user, no multi-query, HyDE or translation of the question, no rewriting or reranking in streaming or in
+  the worker, no reranker model inside the image.
+- Phase 4, the rewriting is asked only when the history filtered by the rules of phase 3 is not empty, not on "at least one
+  completed exchange" as REQ-005 words it (owner's decision at the review of T-02): with `CHAT_HISTORY_MESSAGES` 0 no question is
+  ever rewritten, and with 1 only the last answer, without its question, reaches the rewriting service.
+- Phase 4, low test gaps of T-02 accepted by the owner (behaviour correct today, PR #30): (1) the AC-004 test would not fail if
+  `_answer` ignored "configured" (the request to an empty URL is relative and is not matched by the filter of outgoing
+  requests); (2) the reset of `search_query` to null in `restart_answer` has no failing test of its own (`complete_answer`
+  always overwrites the column); (3) the `set()` in the test of the log line would not catch two rewriting calls in one
+  answer. Also accepted: the 1 MiB cap of `rewrite.py` is checked per decoded chunk, so a compressed body can grow in memory
+  before the check trips (it still ends as `invalid_response`).
+- Phase 4, the Compose reranker (text-embeddings-inference) needs Hugging Face only at its first start, which downloads the
+  model into the volume `reranker-models`; later starts read it from the volume and work offline (ADR-004). Without Hugging
+  Face at the first start the service never becomes healthy: the chat keeps the RRF order and the health shows `rerank:
+  unreachable`. Not covered by an automated test: the e2e use a fake reranker.
+- Phase 4, `MAX_CLIENT_BATCH_SIZE` of the Compose reranker follows `RERANK_CANDIDATES` (20 when empty). An external reranker is
+  not configured by the Compose: it must accept at least `RERANK_CANDIDATES` texts in one request, or every reranking falls back
+  on the RRF order (`http_error`).
+- Phase 4, AC-025 (no text, score or key in the logs) is tested on the backend's lines; on the worker's side it holds by
+  argument: the worker runs no chat code and gets none of the `REWRITE_*` or `RERANK_*` variables, and its lines are covered by
+  `test_logging_privacy.py` of phase 2.
+- Phase 4, with the reranker off only the first `CHAT_CONTEXT_CHUNKS` chunks of the fusion are loaded, as in phase 3 (step 5 of
+  the plan says `max(RERANK_CANDIDATES, CHAT_CONTEXT_CHUNKS)` always); the context is the same, the query is the one of phase 3.
+- Phase 4, the page «Impostazioni» shows a switch left on whose service was removed from `.env` as on and disabled («Non
+  configurato»): the admin cannot switch it off from the page (the API allows it). The step is not active all the same.
 
 ## Characterization tests
 - none: the area was built from the spec (greenfield); its acceptance tests are listed under References.
 
 ## References
 - Spec, plan and ADR: [spec.md](../specs/2026-11-17-fase-3-chat/spec.md), [plan.md](../specs/2026-11-17-fase-3-chat/plan.md),
-  [ADR-003](../adr/ADR-003-chat.md); stack, login and KBs: [fondazioni.md](fondazioni.md); chunks and indexes:
-  [ingestion.md](ingestion.md).
+  [ADR-003](../adr/ADR-003-chat.md); phase 4: [spec.md](../specs/2026-11-20-fase-4-rerank-rewrite/spec.md),
+  [plan.md](../specs/2026-11-20-fase-4-rerank-rewrite/plan.md), [ADR-004](../adr/ADR-004-rerank-rewrite.md); stack, login, KBs
+  and the page «Impostazioni»: [fondazioni.md](fondazioni.md); chunks and indexes: [ingestion.md](ingestion.md).
 - Backend: [routes.py](../../backend/app/chat/routes.py), [service.py](../../backend/app/chat/service.py),
   [repository.py](../../backend/app/chat/repository.py), [retrieval.py](../../backend/app/chat/retrieval.py),
   [prompt.py](../../backend/app/chat/prompt.py), [generation.py](../../backend/app/chat/generation.py),
   [rewrite.py](../../backend/app/chat/rewrite.py), [rerank.py](../../backend/app/chat/rerank.py),
   [schemas.py](../../backend/app/chat/schemas.py), [health.py](../../backend/app/api/health.py),
-  [run.py](../../backend/app/run.py).
-- Data: [0005_conversations.py](../../backend/migrations/versions/0005_conversations.py).
+  [run.py](../../backend/app/run.py); the switches: [app_settings/repository.py](../../backend/app/app_settings/repository.py),
+  [app_settings/routes.py](../../backend/app/app_settings/routes.py).
+- Data: [0005_conversations.py](../../backend/migrations/versions/0005_conversations.py),
+  [0006_rerank_rewrite.py](../../backend/migrations/versions/0006_rerank_rewrite.py).
 - Frontend: [ChatPage.tsx](../../frontend/src/pages/ChatPage.tsx),
   [ConversationView.tsx](../../frontend/src/components/ConversationView.tsx),
-  [ConversationsPage.tsx](../../frontend/src/pages/admin/ConversationsPage.tsx), [client.ts](../../frontend/src/api/client.ts),
+  [ConversationsPage.tsx](../../frontend/src/pages/admin/ConversationsPage.tsx),
+  [SettingsPage.tsx](../../frontend/src/pages/admin/SettingsPage.tsx), [client.ts](../../frontend/src/api/client.ts),
   [App.tsx](../../frontend/src/app/App.tsx).
 - Tests: `backend/tests/` (`test_generation_client.py`, `test_retrieval.py`, `test_rrf.py`, `test_prompt.py`, `test_chat_ask.py`,
   `test_chat_streaming.py`, `test_chat_errors.py`, `test_chat_retry.py`, `test_conversations.py`,
   `test_conversation_isolation.py`, `test_chat_sources.py`, `test_chat_logging_privacy.py`; phase 4: `test_rewrite_client.py`,
-  `test_chat_rewrite.py`, `test_rerank_client.py`, `test_chat_rerank.py`, `test_chat_steps_privacy.py`), `backend/tests/e2e/`
-  (`test_chat_ui.py`, `test_conversations_ui.py`), `frontend/src/pages/ChatPage.test.tsx`,
-  `frontend/src/pages/admin/ConversationsPage.test.tsx`.
+  `test_chat_rewrite.py`, `test_rerank_client.py`, `test_chat_rerank.py`, `test_chat_steps_privacy.py`, `test_app_settings.py`,
+  `test_rerank_rewrite_config.py`, `test_compose_reranker.py`), `backend/tests/e2e/` (`test_chat_ui.py`,
+  `test_conversations_ui.py`, `test_settings_ui.py`), `frontend/src/pages/ChatPage.test.tsx`,
+  `frontend/src/pages/admin/ConversationsPage.test.tsx`, `frontend/src/components/ConversationView.test.tsx`,
+  `frontend/src/pages/admin/SettingsPage.test.tsx`.
