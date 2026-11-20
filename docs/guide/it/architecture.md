@@ -19,7 +19,7 @@ flowchart LR
         nginx["nginx: frontend React, proxy di /api/, HTTPS su richiesta"]
         backend["backend: FastAPI, un solo processo, API, chat e SSE"]
         worker["worker: job di ingestione, uno alla volta"]
-        redis[("redis: sessioni e coda ingestion")]
+        redis[("redis: sessioni e coda di ingestione")]
         db[("db: ParadeDB, PostgreSQL 17 con pgvector e pg_search")]
         uploads[("volume uploads: gli originali fino all'esito")]
         reranker["reranker: facoltativo, profilo rerank"]
@@ -93,7 +93,7 @@ Un admin carica un file nella pagina «Documenti». I dettagli, gli stati e i co
 1. **Upload.** Il browser invia un file con `POST /api/kbs/{kb_id}/documents` (`multipart/form-data`). Nginx rifiuta un corpo oltre `MAX_UPLOAD_SIZE_MB` più 1 MB con lo stesso errore JSON del backend.
 2. **Validazione.** Il backend controlla la sessione e il ruolo (solo admin), trova la KB con `KnowledgeBaseRepository`, copia il file in streaming in `UPLOAD_DIR/{id}.part` calcolando dimensione e SHA-256, e rifiuta un file vuoto, o la cui estensione, tipo MIME dichiarato e firma non indicano lo stesso formato (PDF, DOCX, PPTX, XLSX, TXT o MD). Lo stesso checksum due volte in una KB è un 409.
 3. **Coda.** Il documento è inserito come `QUEUED`, il file è rinominato `UPLOAD_DIR/{id}` e il job `process_document_job` è messo sulla coda RQ `ingestion` in Redis. La risposta è 202 e la pagina rilegge l'elenco ogni 3 secondi.
-4. **Worker.** `worker` prende il job e porta il documento da `QUEUED` a `PROCESSING` con una sola istruzione; se nel frattempo il documento è stato eliminato, il job finisce senza rumore.
+4. **Worker.** `worker` prende il job e porta il documento da `QUEUED` a `PROCESSING` con una sola istruzione; se nel frattempo il documento è stato eliminato, il job si chiude senza errori.
 5. **Lettura.** TXT e MD si leggono come UTF-8. PDF, DOCX, PPTX e XLSX vanno a Docling (senza OCR), che si richiama dopo un errore temporaneo, fino a `INGESTION_MAX_ATTEMPTS` tentativi.
 6. **Chunk.** Il testo è normalizzato e tagliato in chunk strutturali (impostazioni `CHUNK_*`). Con meno di `MIN_EXTRACTED_CHARS` caratteri il documento diventa `UNSUPPORTED`.
 7. **Embedding.** Ollama dà i vettori a gruppi di `EMBEDDING_BATCH_SIZE` testi, per il profilo di indicizzazione attivo (modello e dimensioni).
@@ -211,7 +211,7 @@ Chromium arriva da `playwright install` (è il passo della CI), oppure da un bro
 uv run --frozen --directory backend playwright install --with-deps chromium
 ```
 
-Se hai già un Chromium, imposta la variabile `PLAYWRIGHT_CHROMIUM_EXECUTABLE` con il suo eseguibile invece di installarne uno. Ogni file di test e2e usa un nome di progetto Compose e porte sull'host proprie, aspetta le condizioni senza mai dormire e smonta lo stack con `down -v`. Le porte in uso sono elencate in `AGENTS.md`; la prossima libera è la 19080.
+Se hai già un Chromium, imposta la variabile `PLAYWRIGHT_CHROMIUM_EXECUTABLE` con il suo eseguibile invece di installarne uno. Ogni file di test e2e usa un nome di progetto Compose e porte sull'host proprie, aspetta le condizioni senza mai dormire e smonta lo stack con `down -v`. Le porte in uso, e la prossima libera, sono elencate in `AGENTS.md`.
 
 ### Schermate delle guide
 
@@ -257,13 +257,13 @@ I task pronti nello stesso momento che toccano file diversi possono andare insie
 
 | L'agente decide da solo | L'agente chiede prima | Mai |
 |---|---|---|
-| Nomi interni e struttura entro le convenzioni e le interfacce del piano; chiamate di libreria, algoritmi e strutture dati che il piano lascia aperti; dati e struttura dei test; messaggi di log. Ognuna si scrive sotto «Decisions taken alone» nella PR | Tutto ciò che un utente può vedere e che la specifica lascia aperto (valori, limiti, predefiniti, messaggi); cambi del modello dei dati o di un'interfaccia pubblica oltre il piano; una nuova dipendenza o una deviazione da un'ADR; un file fuori da quelli del task; la chiamata a un servizio esterno che la specifica non configura | Cambiare la specifica o il piano dentro un task (un cambio è una nuova PR di design); modificare o indebolire un test bloccato, o un qualsiasi test, per farlo passare; committare su `main` o fare push su di esso; fare il merge senza la tua scelta; restituire chunk, fonti o metadati di una KB che chi chiede non può leggere |
+| Nomi interni e struttura entro le convenzioni e le interfacce del piano; chiamate di libreria, algoritmi e strutture dati che il piano lascia aperti; dati e struttura dei test; messaggi di log. Ognuna si scrive sotto «Decisions taken alone» nella PR | Tutto ciò che un utente può vedere e che la specifica lascia aperto (valori, limiti, predefiniti, messaggi); cambi del modello dei dati o di un'interfaccia pubblica oltre il piano; una nuova dipendenza o una deviazione da un'ADR; un file fuori da quelli del task; la chiamata a un servizio esterno che la specifica non configura | Cambiare la specifica o il piano dentro un task (un cambio è una nuova PR di design); cambiare `AGENTS.md` fuori dall'aggiornamento proposto nella PR di design o alla chiusura della funzionalità, dopo che lo hai scelto; modificare o indebolire un test bloccato, o un qualsiasi test, per farlo passare; committare su `main` o `master`; fare il merge di una PR senza che tu scelga il merge; fare push su `main`; restituire chunk, fonti o metadati di una KB che chi chiede non può leggere |
 
 Una decisione che nessuna riga nomina conta come «chiede prima».
 
 ### Cosa non si fa mai
 
-Una migrazione già applicata di `backend/migrations/versions/` non si modifica mai: se ne aggiunge una nuova. Un Dockerfile con una patch per un proxy o per un certificato non si committa mai. Un segreto vero, una password o un dato personale non finiscono mai in un documento, in una schermata o in un test. Un test che non è d'accordo con il codice non si cambia per dargli ragione: è la specifica a decidere quale dei due sbaglia.
+Una migrazione già applicata di `backend/migrations/versions/` non si modifica mai: se ne aggiunge una nuova. Un Dockerfile con una patch per un proxy o per un certificato non si committa mai. Un segreto vero, una password o un dato personale non finiscono mai in un documento, in una schermata o in un test. Un test non si cambia, non si salta e non si indebolisce per farlo passare: quando un test non è d'accordo con il codice, è la specifica a decidere quale dei due sbaglia. Un test bloccato che risulta sbagliato si corregge in un nuovo commit `Test-Lock: T-nn`, spiegato nella PR.
 
 ## Dove leggere di più
 
@@ -271,5 +271,5 @@ Una migrazione già applicata di `backend/migrations/versions/` non si modifica 
 - [`docs/specs/`](../../specs/2026-11-06-fase-1-fondazioni/spec.md): una cartella per fase con `spec.md` e `plan.md`: le fondazioni, l'ingestione, la chat, il reranker e la riscrittura, e la documentazione (questa fase).
 - [`docs/adr/`](../../adr/ADR-001-toolchain-fase-1.md): le decisioni di architettura [ADR-001](../../adr/ADR-001-toolchain-fase-1.md) (toolchain), [ADR-002](../../adr/ADR-002-ingestion.md) (ingestione), [ADR-003](../../adr/ADR-003-chat.md) (chat) e [ADR-004](../../adr/ADR-004-rerank-rewrite.md) (reranker e riscrittura). Le specifiche e le ADR sono per lo più in italiano.
 - [`AGENTS.md`](../../../AGENTS.md): comandi, convenzioni, regole e diritti di decisione per persone e agenti.
-- [`docs/constitution.md`](../../constitution.md): i princìpi che ogni fase segue (stack, isolamento, minimizzazione dei dati, prima la CPU, test con servizi finti).
+- [`docs/constitution.md`](../../constitution.md): i princìpi che ogni fase segue (stack, isolamento, minimizzazione dei dati, componenti locali su CPU, test con servizi finti).
 - [Guida all'installazione e all'operatività](installation.md): come installare, configurare e aggiornare lo stack.
