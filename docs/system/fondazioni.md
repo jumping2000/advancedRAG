@@ -191,12 +191,15 @@ Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; 
   the prompt can reach a log. The key is kept as a secret string in the client. Settings errors do not print the
   input values (a startup error never shows `GENERATION_API_KEY`).
 - Rewriting and reranker (phase 4, T-01; backend only, the worker does not get them): `REWRITE_BASE_URL`,
-  `REWRITE_MODEL`, `REWRITE_API_KEY`, `REWRITE_TIMEOUT_SECONDS` (30, above 0) and `RERANK_BASE_URL`, `RERANK_API`
-  (`tei` or `cohere`, default `tei`; blank is `tei`), `RERANK_MODEL` (required with `cohere`), `RERANK_API_KEY`,
-  `RERANK_CANDIDATES` (20, from 1 to `RETRIEVAL_CANDIDATES`), `RERANK_TIMEOUT_SECONDS` (15, above 0). An empty base
-  URL means not configured; the base URLs follow the rule of `GENERATION_BASE_URL`, and `REWRITE_MODEL` is required
-  with `REWRITE_BASE_URL`. Any value that is not valid stops the backend at startup with a message that names the
-  variable and never shows a URL or a key; the two keys are secrets, empty in `.env.example`. The global switches
+  `REWRITE_MODEL`, `REWRITE_API_KEY`, `REWRITE_TIMEOUT_SECONDS` (30, a finite number above 0) and `RERANK_BASE_URL`,
+  `RERANK_API` (`tei` or `cohere`, default `tei`; blank is `tei`), `RERANK_MODEL` (required with `cohere`),
+  `RERANK_API_KEY`, `RERANK_CANDIDATES` (20, from 1 to `RETRIEVAL_CANDIDATES`), `RERANK_TIMEOUT_SECONDS` (15, a finite
+  number above 0). An empty base URL means not configured; the base URLs follow the rule of `GENERATION_BASE_URL`, and
+  `REWRITE_MODEL` is required with `REWRITE_BASE_URL`. `RERANK_API`, `RERANK_MODEL` and `RERANK_CANDIDATES` are checked
+  only with `RERANK_BASE_URL` set, so a `.env` of phase 3 (for example `RETRIEVAL_CANDIDATES` below 20) starts as
+  before; the two timeouts are always checked (`inf` and `nan` refused). Any value that is not valid stops the backend
+  at startup with a message that names the variable and never shows a URL or a key; the two keys are secrets, empty in
+  `.env.example`. The global switches
   `rerank_enabled` and `rewrite_enabled` are the single row of `app_settings` (migration 0006, `id = 1`, both off at
   first; `backend/app/app_settings/`); a step is active only when it is switched on and configured (`active_steps`).
 - The retry route (phase 2, T-05) is the second POST without a JSON body: a POST with no `Content-Type` passes

@@ -1,11 +1,12 @@
 """Application settings read from the environment (.env)."""
 
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -92,9 +93,10 @@ class Settings(BaseSettings):
     rewrite_api_key: SecretStr | None = None
     rewrite_timeout_seconds: float = 30
     # Phase 4 (REQ-002): the reranker, in the format of text-embeddings-inference (`tei`) or of Cohere (`cohere`, which
-    # requires the model; `tei` does not use it). An empty base URL means not configured. The first
-    # `rerank_candidates` chunks of the fusion (1 to RETRIEVAL_CANDIDATES) are reranked, waiting at most
-    # `rerank_timeout_seconds`. The ranges are checked by `_check_step_settings`, so that the error names the variable.
+    # requires the model; `tei` does not use it). An empty base URL means not configured, and then the format, the model
+    # and the candidates are not checked (a `.env` of phase 3 starts as before). The first `rerank_candidates` chunks of
+    # the fusion (1 to RETRIEVAL_CANDIDATES) are reranked, waiting at most `rerank_timeout_seconds`. The ranges are
+    # checked by `_check_step_settings`, so that the error names the variable; the two timeouts are always checked.
     rerank_base_url: str = ""
     rerank_api: Literal["tei", "cohere"] = "tei"
     rerank_model: str = ""
@@ -161,11 +163,15 @@ class Settings(BaseSettings):
 
     @field_validator("rerank_api", mode="before")
     @classmethod
-    def _check_rerank_api(cls, value: Any) -> Any:
-        """Blank counts as not set (`tei`); any other value than `tei` or `cohere` names the variable."""
+    def _check_rerank_api(cls, value: Any, info: ValidationInfo) -> Any:
+        """Blank counts as not set (`tei`). With RERANK_BASE_URL set (validated before this field), any other value than
+        `tei` or `cohere` names the variable; without it the value is not checked and the unused default `tei` is
+        kept in its place."""
         if isinstance(value, str):
             value = value.strip() or "tei"
         if value not in ("tei", "cohere"):
+            if not info.data.get("rerank_base_url"):
+                return "tei"
             raise ValueError("RERANK_API must be tei or cohere")  # the value is not repeated
         return value
 
@@ -179,9 +185,17 @@ class Settings(BaseSettings):
             )
         if self.rewrite_base_url and not self.rewrite_model:
             raise ValueError("REWRITE_MODEL must be set when REWRITE_BASE_URL is set")
-        if not self.rewrite_timeout_seconds > 0:
-            raise ValueError(f"REWRITE_TIMEOUT_SECONDS must be above 0, got {self.rewrite_timeout_seconds}")
-        if self.rerank_base_url and not _is_http_url_with_host(self.rerank_base_url):
+        if not (math.isfinite(self.rewrite_timeout_seconds) and self.rewrite_timeout_seconds > 0):
+            raise ValueError(
+                f"REWRITE_TIMEOUT_SECONDS must be a finite number above 0, got {self.rewrite_timeout_seconds}"
+            )
+        if not (math.isfinite(self.rerank_timeout_seconds) and self.rerank_timeout_seconds > 0):
+            raise ValueError(
+                f"RERANK_TIMEOUT_SECONDS must be a finite number above 0, got {self.rerank_timeout_seconds}"
+            )
+        if not self.rerank_base_url:
+            return self  # not configured: the format, the model and the candidates are not used, so not checked
+        if not _is_http_url_with_host(self.rerank_base_url):
             raise ValueError("RERANK_BASE_URL must be an http or https URL with a host, for example http://reranker")
         if self.rerank_api == "cohere" and not self.rerank_model:
             raise ValueError("RERANK_MODEL must be set when RERANK_API is cohere")
@@ -190,8 +204,6 @@ class Settings(BaseSettings):
                 f"RERANK_CANDIDATES must be from 1 to RETRIEVAL_CANDIDATES ({self.retrieval_candidates}),"
                 f" got {self.rerank_candidates}"
             )
-        if not self.rerank_timeout_seconds > 0:
-            raise ValueError(f"RERANK_TIMEOUT_SECONDS must be above 0, got {self.rerank_timeout_seconds}")
         return self
 
     @property
