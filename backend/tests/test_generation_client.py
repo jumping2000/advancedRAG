@@ -552,6 +552,9 @@ async def test_SPEC_2026_11_17_fase_3_chat_AC_004_no_provider_is_not_configured_
             "docling": "ok",
             "worker": "ok",
             "generation": "not_configured",
+            # phase 4 (REQ-011): the two new checks, not configured here either
+            "rewrite": "not_configured",
+            "rerank": "not_configured",
         },
     }
     # only Ollama and Docling were called: nothing went out for the provider
