@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    SmallInteger,
     Text,
     UniqueConstraint,
     func,
@@ -239,6 +240,8 @@ class Message(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
     notice: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Phase 4: the question searched for an answer, when the rewriting changed it; NULL otherwise and for older answers.
+    search_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -262,3 +265,17 @@ class MessageSource(Base):
     bm25_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     cited: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+
+class AppSetting(Base):
+    """The global switches of the two optional steps of an answer (phase 4): one row only, `id = 1` (CHECK), inserted by
+    the migration 0006 with both switches off. A step is active only when it is switched on and its service is
+    configured in `.env` (`app.app_settings.repository.active_steps`)."""
+
+    __tablename__ = "app_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="app_settings_single_row_check"),)
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)
+    rerank_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    rewrite_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

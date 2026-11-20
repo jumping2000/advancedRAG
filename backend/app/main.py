@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import health
+from app.app_settings import routes as app_settings
 from app.auth import routes as auth
 from app.auth.deps import ApiError, api_error_handler, http_error_handler, require_json, validation_error_handler
 from app.auth.sessions import SessionStore
@@ -47,4 +48,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(knowledge_bases.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
+    app.include_router(app_settings.router, prefix="/api")
     return app
