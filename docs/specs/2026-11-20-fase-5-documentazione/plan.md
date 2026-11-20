@@ -116,7 +116,7 @@ flowchart TD
 ```
 
 ## Tasks
-- [ ] T-01 La guida di installazione IT/EN documenta ogni variabile e i test tengono allineate le guide — covers: AC-007, AC-011, AC-012, AC-017 — files: `backend/tests/docs_support.py`, `backend/tests/test_docs_alignment.py`, `backend/tests/test_docs_install_guide.py`, `docs/guide/en/installation.md`, `docs/guide/it/installation.md` — depends: none — verify: `python3 scripts/verify.py`
+- [x] T-01 La guida di installazione IT/EN documenta ogni variabile e i test tengono allineate le guide — covers: AC-007, AC-011, AC-012, AC-017 — files: `backend/tests/docs_support.py`, `backend/tests/test_docs_alignment.py`, `backend/tests/test_docs_install_guide.py`, `docs/guide/en/installation.md`, `docs/guide/it/installation.md` — depends: none — verify: `python3 scripts/verify.py`
 - [ ] T-02 La guida utente IT/EN con le schermate catturate dallo stack di test — covers: AC-005, AC-009, AC-016 — files: `backend/tests/e2e/test_screenshots.py`, `backend/pyproject.toml`, `docs/guide/images/en/`, `docs/guide/images/it/`, `docs/guide/en/user.md`, `docs/guide/it/user.md`, `backend/tests/test_docs_user_guide.py` — depends: T-01 — verify: `python3 scripts/verify.py`
 - [ ] T-03 La guida admin IT/EN — covers: AC-006 — files: `docs/guide/en/admin.md`, `docs/guide/it/admin.md`, `backend/tests/test_docs_admin_guide.py` — depends: T-02 — verify: `python3 scripts/verify.py`
 - [ ] T-04 La guida di architettura e sviluppo IT/EN — covers: AC-004, AC-008 — files: `docs/guide/en/architecture.md`, `docs/guide/it/architecture.md`, `backend/tests/test_docs_architecture_guide.py`, `backend/tests/test_docs_guides_complete.py` — depends: T-01 — verify: `python3 scripts/verify.py`
