@@ -131,7 +131,8 @@ restano verdi e nessuna richiesta parte verso quei servizi. `python3 scripts/ver
   vuota.
 - REQ-008 (functional): Con il reranker attivo, i primi `RERANK_CANDIDATES` chunk della fusione RRF vengono inviati al
   reranker con la domanda cercata.
-  - Il formato `tei` è `POST {RERANK_BASE_URL}/rerank` con `{query, texts}` e risposta `[{index, score}]`.
+  - Il formato `tei` è `POST {RERANK_BASE_URL}/rerank` con `{query, texts, truncate: true}` e risposta
+    `[{index, score}]`: `truncate` fa accorciare al reranker i testi oltre il limite del modello invece di rifiutarli.
   - Il formato `cohere` è `POST {RERANK_BASE_URL}/rerank` con `{model, query, documents, top_n}` e risposta
     `{results: [{index, relevance_score}]}`.
   - Il contesto prende i primi `CHAT_CONTEXT_CHUNKS` di questo ordine: i candidati inviati, per punteggio del reranker
@@ -217,7 +218,7 @@ restano verdi e nessuna richiesta parte verso quei servizi. `python3 scripts/ver
   in inglese; given una risposta con `search_query` vuota, then la riga non compare.
 - AC-014 [REQ-008]: Given il reranker attivo con formato `tei`, `RERANK_CANDIDATES` 3, `CHAT_CONTEXT_CHUNKS` 4, una
   fusione RRF [a, b, c, d, e] e un reranker finto che risponde con i punteggi c=0.9, a=0.5, b=0.1, when si fa una
-  domanda, then il reranker riceve `{query, texts}` con i testi di a, b, c, il contesto numerato è [c, a, b, d] e le
+  domanda, then il reranker riceve `{query, texts, truncate: true}` con i testi di a, b, c, il contesto numerato è [c, a, b, d] e le
   fonti salvate seguono quell'ordine.
 - AC-015 [REQ-008]: Given il formato `cohere` con `RERANK_MODEL` impostato e `RERANK_API_KEY` impostata, when si fa una
   domanda, then il reranker finto riceve `POST /rerank` con `model`, `query`, `documents`, `top_n` uguale al numero dei
@@ -298,4 +299,5 @@ restano verdi e nessuna richiesta parte verso quei servizi. `python3 scripts/ver
 - Valutazione del retrieval e delle risposte (dataset, metriche, confronto con i nuovi passi), rimandata — blocking: no
 
 ## Revisions
-- none
+- 2026-11-20 (prima del merge della PR di design): REQ-008 e AC-014, il formato `tei` invia anche `truncate: true`,
+  perché text-embeddings-inference rifiuta i testi oltre il limite del modello (decisione dell'owner al piano).
