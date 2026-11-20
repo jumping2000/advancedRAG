@@ -127,6 +127,24 @@ async def test_AC_001_without_a_rewrite_base_url_rewrite_configured_is_false(eng
     assert response.json()["rewrite"] == {"enabled": False, "configured": False}
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"retrieval_candidates": 10}, id="retrieval-10"),
+        pytest.param({"rerank_api": "cohere", "rerank_model": ""}, id="cohere-without-model"),
+    ],
+)
+async def test_AC_002_without_a_reranker_base_url_rerank_configured_is_false(
+    engine: AsyncEngine, overrides: dict[str, Any]
+) -> None:
+    """Revised AC-002: without RERANK_BASE_URL its other values are not checked; the API says not configured."""
+    async with signed_in(engine, ADMIN, "admin", make_settings(**overrides)) as admin:
+        response = await admin.get(SETTINGS)
+
+    assert response.status_code == 200
+    assert response.json()["rerank"] == {"enabled": False, "configured": False}
+
+
 async def test_configured_reflects_the_settings_of_each_service(engine: AsyncEngine) -> None:
     async with signed_in(engine, ADMIN, "admin", make_settings(**REWRITE)) as admin:
         only_rewrite = (await admin.get(SETTINGS)).json()
