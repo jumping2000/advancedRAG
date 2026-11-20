@@ -93,15 +93,17 @@ restano verdi e nessuna richiesta parte verso quei servizi. `python3 scripts/ver
 ## Requirements
 - REQ-001 (functional): Il backend legge la riscrittura da `REWRITE_BASE_URL` (URL di base di un'API OpenAI-compatible,
   http o https con un host), `REWRITE_MODEL`, `REWRITE_API_KEY` (facoltativa, inviata come `Authorization: Bearer`) e
-  `REWRITE_TIMEOUT_SECONDS` (default 30, maggiore di 0). Con `REWRITE_BASE_URL` vuota la riscrittura non è configurata.
+  `REWRITE_TIMEOUT_SECONDS` (default 30, un numero finito maggiore di 0). Con `REWRITE_BASE_URL` vuota la riscrittura non è configurata.
   Con `REWRITE_BASE_URL` impostata e `REWRITE_MODEL` vuota, o con un URL non valido, il backend non parte e il
   messaggio nomina la variabile.
 - REQ-002 (functional): Il backend legge il reranker da `RERANK_BASE_URL` (URL di base, http o https con un host),
   `RERANK_API` (`tei` o `cohere`, default `tei`), `RERANK_MODEL` (obbligatorio con `cohere`, non usato con `tei`),
   `RERANK_API_KEY` (facoltativa, inviata come `Authorization: Bearer`), `RERANK_CANDIDATES` (default 20, tra 1 e
-  `RETRIEVAL_CANDIDATES`) e `RERANK_TIMEOUT_SECONDS` (default 15, maggiore di 0). Con `RERANK_BASE_URL` vuota il
-  reranker non è configurato. Un valore non valido, oppure `cohere` senza `RERANK_MODEL`, impedisce l'avvio del backend
-  e il messaggio nomina la variabile.
+  `RETRIEVAL_CANDIDATES`) e `RERANK_TIMEOUT_SECONDS` (default 15, un numero finito maggiore di 0). Con
+  `RERANK_BASE_URL` vuota il reranker non è configurato e `RERANK_API`, `RERANK_MODEL` e `RERANK_CANDIDATES` non
+  vengono controllati, così una configurazione della fase 3 (per esempio `RETRIEVAL_CANDIDATES` minore di 20) parte
+  come prima. Con `RERANK_BASE_URL` impostata, un valore non valido oppure `cohere` senza `RERANK_MODEL` impedisce
+  l'avvio del backend e il messaggio nomina la variabile; un timeout non valido lo impedisce sempre.
 - REQ-003 (functional): Le impostazioni `rerank_enabled` e `rewrite_enabled` sono globali, salvate nel database e
   spente finché l'admin non le accende. Un passo è attivo solo se è acceso e configurato. Un cambio vale per ogni
   domanda e ogni «Riprova» che inizia dopo il salvataggio, senza riavvio; una risposta già in corso finisce con lo stato
@@ -182,9 +184,11 @@ restano verdi e nessuna richiesta parte verso quei servizi. `python3 scripts/ver
 - AC-001 [REQ-001]: Given `REWRITE_BASE_URL` impostata e `REWRITE_MODEL` vuota, e poi `REWRITE_BASE_URL` uguale a
   `ftp://x` e a `http://`, when il backend parte, then termina con un messaggio che nomina la variabile; given
   `REWRITE_BASE_URL` vuota, then parte e `rewrite.configured` è false.
-- AC-002 [REQ-002]: Given `RERANK_API` uguale a `xyz`, poi `cohere` con `RERANK_MODEL` vuota, poi `RERANK_CANDIDATES`
-  uguale a 0 e a 51 con `RETRIEVAL_CANDIDATES` 50, poi `RERANK_TIMEOUT_SECONDS` uguale a 0, when il backend parte, then
-  termina con un messaggio che nomina la variabile.
+- AC-002 [REQ-002]: Given `RERANK_BASE_URL` impostata e `RERANK_API` uguale a `xyz`, poi `cohere` con `RERANK_MODEL`
+  vuota, poi `RERANK_CANDIDATES` uguale a 0 e a 51 con `RETRIEVAL_CANDIDATES` 50, poi `RERANK_TIMEOUT_SECONDS` uguale a
+  0 e a `inf`, e `REWRITE_TIMEOUT_SECONDS` uguale a `nan`, when il backend parte, then termina con un messaggio che
+  nomina la variabile; given `RERANK_BASE_URL` vuota con `RETRIEVAL_CANDIDATES` 10, oppure con `RERANK_API` `cohere` e
+  `RERANK_MODEL` vuota, then parte e `rerank.configured` è false.
 - AC-003 [REQ-003]: Given un database nuovo, when l'admin legge le impostazioni, then `rerank` e `rewrite` hanno
   `enabled` false; when accende la riscrittura e un utente fa una domanda, then il servizio finto di riscrittura riceve
   la richiesta senza riavvio del backend.
@@ -299,5 +303,9 @@ restano verdi e nessuna richiesta parte verso quei servizi. `python3 scripts/ver
 - Valutazione del retrieval e delle risposte (dataset, metriche, confronto con i nuovi passi), rimandata — blocking: no
 
 ## Revisions
+- 2026-11-20 (review di T-01): REQ-001, REQ-002 e AC-002. `RERANK_API`, `RERANK_MODEL` e `RERANK_CANDIDATES` si
+  controllano solo con `RERANK_BASE_URL` impostata, perché con la lettura precedente un `.env` della fase 3 con
+  `RETRIEVAL_CANDIDATES` minore di 20 non partiva più, contro REQ-103; i due timeout devono essere numeri finiti
+  (`inf` e `nan` rifiutati). Decisione dell'owner alla review di T-01; il piano non cambia (T-01 copre ancora AC-002).
 - 2026-11-20 (prima del merge della PR di design): REQ-008 e AC-014, il formato `tei` invia anche `truncate: true`,
   perché text-embeddings-inference rifiuta i testi oltre il limite del modello (decisione dell'owner al piano).
