@@ -658,7 +658,8 @@ async def test_the_rewrite_line_has_the_ids_the_use_and_the_reason_and_no_text(
         async with world.api(**with_closed_port(settings)) as api:
             message = done_message(events_of(await ask(api, conversation, FOLLOW_UP)))
 
-    (line,) = rewrite_lines(logs.lines)
+    # all_logs (phase 3) collects each record twice (app logger and root logger): one distinct line is expected
+    (line,) = set(rewrite_lines(logs.lines))
     ids = f"conversation={conversation} message={message['id']} kb={world.chat.kb_a}"
     assert re.fullmatch(rf"chat rewrite {re.escape(ids)} used={used} reason={reason} ms=\d+", line), line
     everything = "\n".join(text for _, text in logs.lines)
