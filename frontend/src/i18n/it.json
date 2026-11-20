@@ -180,6 +180,7 @@
     "assistant": "Assistente",
     "messages": "Messaggi",
     "sources": "Fonti",
+    "searchQuery": "Ricerca: {{query}}",
     "showExcerpt": "Mostra estratto",
     "hideExcerpt": "Nascondi estratto",
     "sourceUnavailable": "Fonte non più disponibile",
@@ -202,6 +203,18 @@
       "conversation_not_found": "Conversazione non trovata.",
       "not_retryable": "Non si può riprovare: solo l'ultima risposta, se è fallita, si può ripetere.",
       "validation_error": "Il testo non è valido: controlla la lunghezza."
+    }
+  },
+  "settings": {
+    "menu": "Impostazioni",
+    "title": "Impostazioni",
+    "rewrite": "Riscrittura della domanda",
+    "rewriteHelp": "Riformula una domanda di seguito come domanda autonoma prima della ricerca.",
+    "rerank": "Reranker",
+    "rerankHelp": "Riordina i passaggi trovati prima della risposta.",
+    "notConfigured": "Non configurato",
+    "errors": {
+      "service_not_configured": "Il servizio di questo passo non è configurato."
     }
   },
   "errors": {

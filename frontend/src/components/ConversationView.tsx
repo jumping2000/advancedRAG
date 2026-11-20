@@ -54,7 +54,8 @@ type Props = {
 };
 
 /** The messages of a conversation: the question, the answer as text (the [n] of a source are buttons, nothing is
- * HTML), the sources under it with their excerpts, the reason of a failure and «Riprova» (REQ-019, REQ-020). */
+ * HTML), the sources under it with their excerpts, the reason of a failure and «Riprova» (REQ-019, REQ-020); under an
+ * answer whose question was rewritten for the search, «Ricerca: <searched question>» (phase 4, REQ-007). */
 export function ConversationView({ conversation, readOnly, onRetry }: Props) {
   const { t } = useTranslation();
   const errorText = useErrorText();
@@ -128,6 +129,7 @@ export function ConversationView({ conversation, readOnly, onRetry }: Props) {
               )}
             </>
           )}
+          {message.search_query && <p>{t("chat.searchQuery", { query: message.search_query })}</p>}
           {message.sources.length > 0 && (
             <ul aria-label={t("chat.sources")}>
               {message.sources.map((source) => {

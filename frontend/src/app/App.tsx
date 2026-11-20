@@ -11,6 +11,7 @@ import { LoginPage } from "../pages/LoginPage";
 import { ConversationsPage } from "../pages/admin/ConversationsPage";
 import { DocumentsPage } from "../pages/admin/DocumentsPage";
 import { KnowledgeBaseAdminPage } from "../pages/admin/KnowledgeBaseAdminPage";
+import { SettingsPage } from "../pages/admin/SettingsPage";
 import { UsersPage } from "../pages/admin/UsersPage";
 
 /** An admin page: the login page without a session, the own KB list for a user (REQ-010, REQ-012). */
@@ -36,6 +37,7 @@ function Layout() {
                 <Link to="/admin/kbs">{t("kbAdmin.menu")}</Link>
                 <Link to="/admin/documents">{t("documents.menu")}</Link>
                 <Link to="/admin/conversations">{t("convAdmin.menu")}</Link>
+                <Link to="/admin/settings">{t("settings.menu")}</Link>
               </>
             )}
             <span>{user.username}</span>
@@ -52,6 +54,7 @@ function Layout() {
           <Route path="/admin/kbs" element={adminOnly(user, <KnowledgeBaseAdminPage />)} />
           <Route path="/admin/documents" element={adminOnly(user, <DocumentsPage />)} />
           <Route path="/admin/conversations" element={adminOnly(user, <ConversationsPage />)} />
+          <Route path="/admin/settings" element={adminOnly(user, <SettingsPage />)} />
           <Route path="/kbs/:kbId" element={user ? <ChatPage /> : <Navigate to="/login" replace />} />
           <Route path="*" element={user ? <KnowledgeBasesPage /> : <Navigate to="/login" replace />} />
         </Routes>
