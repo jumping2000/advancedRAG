@@ -47,5 +47,6 @@ testpaths = ["tests"]
 markers = [
     "e2e: tests that start the full docker compose stack",
     "live: smoke tests of the real Docling and Ollama (need LIVE_SERVICES=1, never run by default)",
+    "screenshots: captures the screenshots of the guides with the Compose stack (opt-in: pytest -m screenshots, never part of verify)",
 ]
-addopts = "-m 'not e2e and not live'"
+addopts = "-m 'not e2e and not live and not screenshots'"
