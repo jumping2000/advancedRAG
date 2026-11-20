@@ -1,0 +1,16 @@
+# Reranker on a NVIDIA GPU (REQ-013, ADR-004):
+#   docker compose -f compose.yaml -f compose.rerank-gpu.yaml --profile rerank up --build
+# It replaces the CPU image of the `reranker` service of compose.yaml and reserves one GPU, so only one reranker image
+# runs. The host needs the NVIDIA Container Toolkit. This image (compute capability 8.0) serves Ampere (A100, A30, A10,
+# A40, RTX 30xx) and Ada Lovelace (RTX 40xx, L4, L40) GPUs; for another family use the tag of the same release from
+# the table of the text-embeddings-inference README (e.g. turing-1.9.4, hopper-1.9.4).
+services:
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.9.4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

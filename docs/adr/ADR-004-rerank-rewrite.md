@@ -23,6 +23,19 @@ si accendono e spengono senza riavvio da una pagina admin (REQ-003). Il backend 
   sull'host. `compose.rerank-gpu.yaml`, sullo stesso modello di `compose.tls.yaml`, sostituisce l'immagine con quella GPU
   e riserva una GPU NVIDIA: il servizio è sempre uno solo. I tag esatti delle due immagini sono fissati da T-04 dopo la
   verifica sul registro e annotati qui.
+- Immagini fissate da T-04 (2026-11-20), release 1.9.4 di text-embeddings-inference:
+  - CPU (`compose.yaml`): `ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4`;
+  - GPU (`compose.rerank-gpu.yaml`): `ghcr.io/huggingface/text-embeddings-inference:1.9.4`, compilata per la compute
+    capability 8.0, che TEI accetta sulle GPU da 8.0 a 8.9: Ampere (A100, A30, A10, A40, RTX 30xx) e Ada Lovelace
+    (RTX 40xx, L4, L40). Per Turing, Hopper o Blackwell si usa il tag della stessa release indicato dalla tabella del
+    README (`turing-1.9.4`, `hopper-1.9.4`, `100-1.9.4`, `120-1.9.4`);
+  - verifica: con l'API del registro `ghcr.io/v2/huggingface/text-embeddings-inference` (elenco dei tag e manifest),
+    1.9.4 è la release più alta, `cpu-1.9.4` e `1.9.4` sono indici OCI `linux/amd64` con lo stesso digest dei tag mobili
+    `cpu-1.9` e `1.9` (`latest` e `cpu-latest` sono build del ramo principale, non una release); nel tag `v1.9.4` del
+    repository `huggingface/text-embeddings-inference` il README elenca i modelli di re-ranking XLM-RoBERTa (la famiglia
+    di `BAAI/bge-reranker-v2-m3`) e la tabella delle immagini per GPU, `backends/candle/src/compute_cap.rs` dà la
+    compatibilità 8.0 → 8.0-8.9, e `Dockerfile` e `Dockerfile-cuda` installano `curl` (usato dall'healthcheck su
+    `/health`) e impostano `PORT=80` e `HUGGINGFACE_HUB_CACHE=/data`; il server legge il modello da `MODEL_ID`.
 - Interruttori: tabella `app_settings` in PostgreSQL con una sola riga (`id = 1`), creata spenta dalla migrazione 0006;
   ogni risposta legge gli interruttori una volta all'inizio.
 - Nessuna dipendenza Python o npm nuova: i client usano `httpx` (ADR-001).
