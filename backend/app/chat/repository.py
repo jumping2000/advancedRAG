@@ -433,9 +433,10 @@ class ConversationRepository:
         its status and its role, in the UPDATE itself, so nothing can come between the check and the change.
         `MessageNotFound` if the conversation has no such message, `AnswerInProgress` if it has a PENDING answer
         (checked before `NotRetryable`: while an answer is in progress, any retry is refused for that reason; also when
-        a simultaneous request got the unique index `messages_one_pending` first), `NotRetryable` otherwise (a question, a COMPLETED answer, a failed
-        answer that a later message follows). Nothing is written when it raises. The conversation row is locked first
-        (see the module: lock order); if it is gone the message is gone too (`MessageNotFound`)."""
+        a simultaneous request got the unique index `messages_one_pending` first), `NotRetryable` otherwise (a question,
+        a COMPLETED answer, a failed answer that a later message follows). Nothing is written when it raises. The
+        conversation row is locked first (see the module: lock order); if it is gone the message is gone too
+        (`MessageNotFound`)."""
         conversation_id = conversation.id
         locked = await self.session.scalar(
             select(Conversation.id).where(Conversation.id == conversation_id).with_for_update(key_share=True)
