@@ -42,6 +42,15 @@ original question, and the answer saves it as `search_query` when it differs fro
 A rewriting that fails falls back on the original question, and the answer goes on (REQ-006). The line `chat rewrite
 <ids> used=<true|false> reason=<reason|none> ms=<n>` is logged when the service was asked, never with a text (REQ-101);
 with the step off nothing changes from phase 3 (REQ-103).
+
+With the reranker active (REQ-008, REQ-009), the first `max(RERANK_CANDIDATES, CHAT_CONTEXT_CHUNKS)` chunks of the
+fusion are loaded (only `CHAT_CONTEXT_CHUNKS` with the step off, as in phase 3), and when more than one of the first
+`RERANK_CANDIDATES` is there, their contents are sent to the reranker (`RerankClient`) with the searched question; the
+context is the first `CHAT_CONTEXT_CHUNKS` of `rerank_order` (the reranked ones by score, then the others in the RRF
+order), and the sources are saved in that order with their RRF score. A reranking that fails keeps the RRF order, and
+the answer goes on. The reranker is waited for with no database session open, in the task of the answer: a delete of
+the conversation cancels it like any other step. The line `chat rerank <ids> used=<true|false> reason=<reason|none>
+candidates=<n> ms=<n>` is logged when the reranker was asked, never with a text or a score (REQ-101).
 """
 
 from __future__ import annotations
@@ -64,6 +73,7 @@ from app.app_settings.repository import AppSettingsRepository, active_steps
 from app.chat.generation import GenerationError, OpenAICompatibleClient
 from app.chat.prompt import build_messages, clean_citations
 from app.chat.repository import ConversationRepository
+from app.chat.rerank import RerankClient, RerankError, rerank_order
 from app.chat.retrieval import Candidate, bm25_search, dense_search, fuse, has_searchable_chunks, load_candidates
 from app.chat.rewrite import QuestionRewriter, RewriteError
 from app.chat.schemas import MessageOut, SourceOut
@@ -332,7 +342,7 @@ async def _answer(
         raise _Stopped
     async with sessions() as session:  # once: the answer keeps this state to its end (REQ-003)
         switches = await AppSettingsRepository(session).switches()
-    _rerank_active, rewrite_active = active_steps(settings, switches)
+    rerank_active, rewrite_active = active_steps(settings, switches)
     profile = await active_profile(app)
 
     async with sessions() as session:
@@ -353,23 +363,26 @@ async def _answer(
         dense_ids = await dense_search(session, user, kb_id, profile, vector, settings.retrieval_candidates)
         bm25_ids = await bm25_search(session, user, kb_id, profile.id, searched, settings.retrieval_candidates)
         fused = fuse(dense_ids, bm25_ids, settings.rrf_k)
-        # The reranker (T-03) reorders the first candidates of `fused` here, with `searched` as its query
-        ranked = fused[: settings.chat_context_chunks]
-        candidates = await load_candidates(session, user, kb_id, profile.id, ranked)
+        loaded = settings.chat_context_chunks
+        if rerank_active:  # the candidates of the reranker can be more than the context
+            loaded = max(settings.rerank_candidates, settings.chat_context_chunks)
+        found = await load_candidates(session, user, kb_id, profile.id, fused[:loaded])
     logger.info(
         "chat retrieval %s dense=%d bm25=%d context=%d history=%d ms=%d",
         ids,
         len(dense_ids),
         len(bm25_ids),
-        len(candidates),
+        min(len(found), settings.chat_context_chunks),
         len(history),
         _elapsed_ms(started),
     )
-    if not candidates:  # what was found is gone (document deleted meanwhile): nothing to cite, nothing to ask
+    if not found:  # what was found is gone (document deleted meanwhile): nothing to cite, nothing to ask
         done = await _finish(sessions, answer.id, "", "no_documents", [], ids, started)
         if done is not None:
             yield done
         return
+    ordered = await _rerank(settings, searched, found, ids) if rerank_active else found
+    candidates = ordered[: settings.chat_context_chunks]
 
     key = settings.generation_api_key.get_secret_value() if settings.generation_api_key else None
     client = OpenAICompatibleClient(
@@ -419,6 +432,34 @@ async def _search_text(
     logger.info("chat rewrite %s used=true reason=none ms=%d", ids, _elapsed_ms(started))
     changed = rewritten.strip().casefold() != question.strip().casefold()
     return rewritten, rewritten if changed else None
+
+
+async def _rerank(settings: Settings, query: str, candidates: Sequence[Candidate], ids: str) -> list[Candidate]:
+    """The candidates (in the RRF order) in the order of the reranker, which is active, when more than one of the
+    first `RERANK_CANDIDATES` is there (their contents are sent, with the searched question); in the RRF order when
+    there is only one, or when the reranker fails. Only the ids, the use, the reason, the count and the time are
+    logged, never a text or a score (REQ-101)."""
+    sent = candidates[: settings.rerank_candidates]
+    if len(sent) < 2:
+        return list(candidates)
+    key = settings.rerank_api_key.get_secret_value() if settings.rerank_api_key else None
+    client = RerankClient(
+        settings.rerank_api, settings.rerank_base_url, settings.rerank_model, key, settings.rerank_timeout_seconds
+    )
+    started = time.monotonic()
+    try:
+        scores = await client.scores(query, [candidate.content for candidate in sent])
+    except RerankError as error:
+        logger.warning(
+            "chat rerank %s used=false reason=%s candidates=%d ms=%d",
+            ids,
+            error.reason,
+            len(sent),
+            _elapsed_ms(started),
+        )
+        return list(candidates)
+    logger.info("chat rerank %s used=true reason=none candidates=%d ms=%d", ids, len(sent), _elapsed_ms(started))
+    return rerank_order(candidates, scores)
 
 
 async def _embed(settings: Settings, profile: IndexingProfile, question: str) -> list[float]:
