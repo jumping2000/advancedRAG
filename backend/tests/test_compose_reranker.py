@@ -133,3 +133,87 @@ def test_AC_024_adr_004_records_the_two_images(tmp_path: Path) -> None:
     adr = (ROOT / "docs" / "adr" / "ADR-004-rerank-rewrite.md").read_text(encoding="utf-8")
     assert f"`{cpu}`" in adr
     assert f"`{gpu}`" in adr
+
+
+# Owner's decisions on the review of PR #29 (second Test-Lock of T-04)
+GPU_KEYS = ("runtime", "gpus", "device_requests", "devices")
+
+
+def compose_config_with(
+    tmp_path: Path, env_values: dict[str, str], *files: str, profiles: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """Like `compose_config`, with exactly these values in the env file (a name left out is unset)."""
+    env_file = tmp_path / "compose-exact.env"
+    env_file.write_text("".join(f"{name}={value}\n" for name, value in env_values.items()), encoding="utf-8")
+    read_by_compose = compose_variables() | set(env_example()) | set(env_values)
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in read_by_compose and not name.startswith("COMPOSE_")
+    }
+    command = [str(DOCKER), "compose", "--project-directory", str(ROOT), "--env-file", str(env_file)]
+    for file in files:
+        command += ["-f", str(ROOT / file)]
+    for profile in profiles:
+        command += ["--profile", profile]
+    result = subprocess.run(
+        [*command, "config", "--format", "json"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    config: dict[str, Any] = json.loads(result.stdout)
+    return config
+
+
+def env_without(*names: str) -> dict[str, str]:
+    """The values of .env.example without these names (an older .env), with a database password."""
+    values = {**env_example(), "POSTGRES_PASSWORD": "compose-test-password"}
+    return {name: value for name, value in values.items() if name not in names}
+
+
+def test_AC_024_the_reranker_accepts_as_many_texts_as_rerank_candidates(tmp_path: Path) -> None:
+    def batch_size(config: dict[str, Any]) -> object:
+        return reranker_of(config)["environment"].get("MAX_CLIENT_BATCH_SIZE")
+
+    rerank = ("rerank",)
+    gpu = ("compose.yaml", "compose.rerank-gpu.yaml")
+    # .env.example has RERANK_CANDIDATES=20; empty or missing is the default of the backend, 20
+    assert batch_size(compose_config(tmp_path, "compose.yaml", profiles=rerank)) == "20"
+    assert batch_size(compose_config(tmp_path, "compose.yaml", profiles=rerank, RERANK_CANDIDATES="")) == "20"
+    assert (
+        batch_size(compose_config_with(tmp_path, env_without("RERANK_CANDIDATES"), "compose.yaml", profiles=rerank))
+        == "20"
+    )
+    # Up to RETRIEVAL_CANDIDATES (50), above the 32 texts that TEI accepts by default
+    assert batch_size(compose_config(tmp_path, "compose.yaml", profiles=rerank, RERANK_CANDIDATES="50")) == "50"
+    assert batch_size(compose_config(tmp_path, *gpu, profiles=rerank, RERANK_CANDIDATES="50")) == "50"
+    assert batch_size(compose_config(tmp_path, *gpu, profiles=rerank)) == "20"
+
+
+def test_AC_024_on_cpu_no_service_uses_a_gpu_image_or_device(tmp_path: Path) -> None:
+    gpu_image = reranker_of(compose_config(tmp_path, "compose.yaml", "compose.rerank-gpu.yaml", profiles=("rerank",)))[
+        "image"
+    ]
+    config = compose_config(tmp_path, "compose.yaml", profiles=("rerank",))
+    images = {name: str(service.get("image", "")) for name, service in config["services"].items()}
+
+    assert gpu_image not in images.values()
+    tei_images = {image for image in images.values() if image.startswith(f"{TEI}:")}
+    assert len(tei_images) == 1
+    assert next(iter(tei_images)).startswith(f"{TEI}:cpu-")
+    for name, service in config["services"].items():
+        assert [key for key in GPU_KEYS if key in service] == [], name
+        assert service.get("deploy", {}).get("resources", {}).get("reservations", {}).get("devices") is None, name
+        assert [key for key in service.get("environment") or {} if key.startswith("NVIDIA_")] == [], name
+
+
+def test_AC_024_without_rerank_compose_model_the_default_model(tmp_path: Path) -> None:
+    for config in (
+        compose_config(tmp_path, "compose.yaml", profiles=("rerank",), RERANK_COMPOSE_MODEL=""),
+        compose_config_with(tmp_path, env_without("RERANK_COMPOSE_MODEL"), "compose.yaml", profiles=("rerank",)),
+    ):
+        assert reranker_of(config)["environment"]["MODEL_ID"] == DEFAULT_MODEL
