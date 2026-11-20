@@ -13,8 +13,6 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LANGS = ("en", "it")
 GUIDES = ("user.md", "admin.md", "installation.md", "architecture.md")
@@ -24,6 +22,8 @@ HEADING = re.compile(r"^ {0,3}(#{2,3})[ \t]+(.*\S)[ \t]*$")
 TITLE = re.compile(r"^# +\S")
 ENV_ASSIGNMENT = re.compile(r"^\s*([A-Z][A-Z0-9_]*)=")
 TABLE_NAME = re.compile(r"^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|")
+TOP_LEVEL_VOLUMES = re.compile(r"^volumes:\s*(#.*)?$")
+VOLUME_NAME = re.compile(r"^(\s+)[\"']?([A-Za-z0-9][A-Za-z0-9_.-]*)[\"']?\s*:(\s|$)")
 IMAGE = re.compile(r"""!\[[^\]]*\]\(\s*([^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)""")
 
 
@@ -34,7 +34,7 @@ def guide_path(lang: str, name: str, root: Path = REPO_ROOT) -> Path:
 
 def read_text(path: Path) -> str:
     """The file as UTF-8 text with `\\n` line ends and without a BOM, so that a file saved on Windows reads the same."""
-    text = path.read_bytes().decode("utf-8").removeprefix("﻿")
+    text = path.read_bytes().decode("utf-8").removeprefix("\ufeff")
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -109,6 +109,23 @@ def image_refs(text: str) -> list[str]:
 
 
 def compose_volumes(root: Path = REPO_ROOT) -> list[str]:
-    """The names of the top-level `volumes:` section of `compose.yaml`, in order."""
-    compose = yaml.safe_load(read_text(root / "compose.yaml"))
-    return list(compose.get("volumes") or {})
+    """The names of the top-level `volumes:` section of `compose.yaml`, in order. Read line by line (the standard
+    library only): the block starts at a `volumes:` line in column 0 and ends at the next line that starts in column 0;
+    comments and blank lines are skipped, and only the keys at the first indentation of the block are names (the
+    options of a volume, such as `driver:`, are deeper)."""
+    names: list[str] = []
+    inside = False
+    indent = -1
+    for line in read_text(root / "compose.yaml").split("\n"):
+        if not inside:
+            inside = bool(TOP_LEVEL_VOLUMES.match(line))
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            break
+        key = VOLUME_NAME.match(line)
+        if key and indent in (-1, len(key.group(1))):
+            indent = len(key.group(1))
+            names.append(key.group(2))
+    return names

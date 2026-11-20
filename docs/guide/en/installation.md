@@ -10,9 +10,9 @@ The technical details are in the area pages: [foundations](../../system/fondazio
 
 ### On the server
 
-- Docker Engine with the Compose plugin (the `docker compose` command, Compose v2). The commands of this guide were tried with Docker 29.9 and Compose 5.6.
+- Docker Engine with the Compose plugin (the `docker compose` command, Compose v2). The commands of the first start, HTTPS, the health check, back up, restore, update and removal were tried with Docker 29.9 and Compose 5.6. Not run: `ollama pull`, the start of the reranker on CPU and on GPU, and `git pull`; the sections on the reranker come from `compose.yaml`, ADR-004 and `.env.example` (their `docker compose` configuration was checked with `config`).
 - Git, to get the code. You do not need Python, `uv` or Node.js to run the stack: the images build everything.
-- Access, from the server, to the registries that the build and the start use: the Docker images (`paradedb/paradedb`, `redis`, `nginx`, `python`, `node`), npm and PyPI for the build, and Hugging Face only for the optional reranker.
+- Access, from the server, to the registries that the build and the start use: the Docker images (`paradedb/paradedb`, `redis`, `nginx`, `python`, `node`, and `ghcr.io/huggingface/text-embeddings-inference` for the optional reranker), npm and PyPI for the build, and Hugging Face for the model of the optional reranker.
 - A free host port for Nginx, the only service that publishes one: `HTTP_PORT` (80 by default), and `HTTPS_PORT` (443 by default) when you use HTTPS.
 - The project gives no sizing figures. The heavy parts are the models of the services you provide and, if you use it, the reranker.
 
@@ -97,23 +97,23 @@ A new stack answers `degraded` on `/api/health` until you configure the optional
 
 The `.env` file is in the root of the repository and is read by Docker Compose. A line is `NAME=value`; a variable that is empty or absent takes the default of the table. After a change, run `docker compose up -d` again (with the same `-f` and `--profile` options as the start) and Compose recreates the services whose variables changed.
 
-- **Default** is the value used when the variable is absent or empty. Where it says *empty*, empty means that the feature is off or the value is not set.
+- **Default** is the value used when the variable is absent or empty. Where it says *empty*, empty means that the feature is off or the value is not set. Where it says *none*, there is no default: Compose refuses to start when the variable is absent or empty (the example, when there is one, is the value of `.env.example`).
 - **Required** says when the stack does not start without the variable.
-- The backend and the worker receive different sets: the worker does not get the chat variables and the backend does not get the Docling and ingestion ones; the meaning says when only the worker reads a variable.
-- A value that is not valid stops the backend at start with a message that names the variable and never shows the value or a key. Read it with `docker compose logs backend`.
+- Backend and worker receive different sets. Both get the database, Redis, Ollama and Docling URLs, `UPLOAD_DIR` and the `EMBEDDING_*` and `CHUNK_*` variables. Only the worker gets `DOCLING_API_KEY`, `DOCLING_TIMEOUT_SECONDS`, `DOCLING_INCLUDE_IMAGES`, `INGESTION_*`, `MIN_EXTRACTED_CHARS` and `FAILED_ORIGINAL_RETENTION_DAYS`. The other variables go to the backend only, except the ports and `RERANK_COMPOSE_MODEL`, which Compose itself reads (`MAX_UPLOAD_SIZE_MB` also goes to Nginx and `RERANK_CANDIDATES` also to the reranker).
+- A value that is not valid stops the backend at start. The message names the variable (a field error names it in lower case, for example `generation_model`) and some messages print the numbers that were wrong; the URLs and the keys are never shown. Read it with `docker compose logs backend`.
 - The keys and passwords are empty in `.env.example`. Never commit your `.env`.
 
 ### Stack and access
 
 | Variable | Meaning | Default | Required |
 |---|---|---|---|
-| `POSTGRES_PASSWORD` | Password of the PostgreSQL user `rag` (database `ragdb`). Any character is allowed; if it contains `$`, write the value in single quotes. The database sets it at its first start only (see Troubleshooting). | *empty* | yes: Compose does not start without it |
+| `POSTGRES_PASSWORD` | Password of the PostgreSQL user `rag` (database `ragdb`). Any character is allowed; if it contains `$`, write the value in single quotes. The database sets it at its first start only (see Troubleshooting). | *none* | yes: Compose does not start without it |
 | `HTTP_PORT` | Host port of Nginx, the only service that publishes a port. With `compose.tls.yaml` it stays published and redirects to HTTPS. | `80` | no |
 | `HTTPS_PORT` | Host port of Nginx for HTTPS. Read only when you start with `compose.tls.yaml`; HTTPS also needs `cert.pem` and `key.pem` in `nginx/certs/`. | `443` | only with `compose.tls.yaml` |
 | `DATABASE_URL` | URL of the database. With Docker Compose it is fixed by `compose.yaml` (`postgresql+asyncpg://rag@db:5432/ragdb`) and this value is not used; set it only to run the backend outside Compose (the password comes from `POSTGRES_PASSWORD`). | *empty* | no: only outside Compose |
 | `REDIS_URL` | URL of Redis (sessions and the ingestion queue). With Docker Compose it is fixed by `compose.yaml` (`redis://redis:6379/0`) and this value is not used; set it only to run the backend outside Compose. | *empty* | no: only outside Compose |
-| `OLLAMA_BASE_URL` | Base URL of Ollama, which Compose does not start, as the containers can reach it (not `localhost`). Ollama gives the vectors of the documents and of the questions; the health check calls `GET /api/version`. Replace the example address. | `http://ollama.example.internal:11434` | yes: Compose refuses an empty value |
-| `DOCLING_BASE_URL` | Base URL of docling-serve, which Compose does not start, as the containers can reach it. Docling reads PDF, DOCX, PPTX and XLSX files; the health check calls `GET /health`. Replace the example address. | `http://docling.example.internal:5001` | yes: Compose refuses an empty value |
+| `OLLAMA_BASE_URL` | Base URL of Ollama, which Compose does not start, as the containers can reach it (not `localhost`). Ollama gives the vectors of the documents and of the questions; the health check calls `GET /api/version`. Replace the example address. | *none* (example: `http://ollama.example.internal:11434`) | yes: Compose refuses an empty value |
+| `DOCLING_BASE_URL` | Base URL of docling-serve, which Compose does not start, as the containers can reach it. Docling reads PDF, DOCX, PPTX and XLSX files; the health check calls `GET /health`. Replace the example address. | *none* (example: `http://docling.example.internal:5001`) | yes: Compose refuses an empty value |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | Seconds that `/api/health` waits for each check. | `2` | no |
 | `ADMIN_USERNAME` | Username of the first admin: 3 to 64 letters, digits, `.`, `_` or `-`. Read only at start-up, when no active admin exists; ignored afterwards. | *empty* | yes, at the first start |
 | `ADMIN_PASSWORD` | Password of the first admin, at least 12 characters. Read like `ADMIN_USERNAME`. | *empty* | yes, at the first start |
@@ -269,6 +269,12 @@ Which GPUs the default image serves (decision ADR-004):
 curl -i http://localhost/api/health
 ```
 
+If you changed `HTTP_PORT`, write it in the address (`http://localhost:<HTTP_PORT>/api/health`). With `compose.tls.yaml` that plain HTTP address answers 301: ask the HTTPS one (`-k` only for a self-signed certificate, and add `:<HTTPS_PORT>` if you changed it):
+
+```bash
+curl -k -i https://localhost/api/health
+```
+
 On a new stack, with only the required services configured, it answers 200 and:
 
 ```json
@@ -356,7 +362,7 @@ The backend applies the new database migrations at its start, and the worker sta
 docker compose down -v
 ```
 
-`-v` also deletes the volumes of the services in the command: the database, the uploads and, with the profile, the model of the reranker. All the data is lost: make a backup first.
+`-v` also deletes the volumes of the services that the command includes: the database and the uploads. Without `--profile rerank` the command leaves the reranker container and its `reranker-models` volume alone (checked); add `--profile rerank` to remove them too. All the data of the database is lost: make a backup first.
 
 ## Troubleshooting
 
@@ -372,7 +378,7 @@ docker compose down -v
 | `/api/health` answers 503 | the database or Redis is `unreachable` | `docker compose ps`, then `docker compose logs db` or `docker compose logs redis` |
 | `ollama` or `docling` is `unreachable` | wrong address, a service that is down, an address that the containers cannot reach (not `localhost`), or no 2xx answer within `HEALTH_CHECK_TIMEOUT_SECONDS` | try the address from inside: `docker compose exec backend python -c "import urllib.request; print(urllib.request.urlopen('http://ollama.example.internal:11434/api/version', timeout=5).status)"` with your address; raise `HEALTH_CHECK_TIMEOUT_SECONDS` if the service is only slow |
 | `worker` is `unreachable`, and the documents stay «Queued» | the worker is not running or not healthy | `docker compose ps worker`, `docker compose logs worker`, `docker compose up -d worker` |
-| a document is «Failed» with a reason about Docling | Docling is not reachable, refuses the key, or answers an error or 504 | check `DOCLING_BASE_URL`, `DOCLING_API_KEY` and the log of Docling; raise its synchronous limit with `DOCLING_TIMEOUT_SECONDS`; then press «Retry» (the original is kept for `FAILED_ORIGINAL_RETENTION_DAYS` days) |
+| a document is «Failed» with a reason about Docling | Docling is not reachable, refuses the key, or answers an error or 504 | check `DOCLING_BASE_URL`, `DOCLING_API_KEY` and the log of Docling; for a 504 raise `DOCLING_SERVE_MAX_SYNC_WAIT` on the docling-serve server and, together with it, `DOCLING_TIMEOUT_SECONDS` (the wait of the worker); then press «Retry» (the original is kept for `FAILED_ORIGINAL_RETENTION_DAYS` days) |
 | a document is «Failed» with a reason about Ollama or the vectors | Ollama is not reachable, the model is not pulled, or the vectors have a size other than `EMBEDDING_DIMENSIONS` | check `OLLAMA_BASE_URL`, run `ollama pull` of the model, make `EMBEDDING_DIMENSIONS` equal to the size the model returns; then press «Retry» |
 | a document is «Unsupported» | not enough text could be extracted (for example a scan: there is no OCR) | use a file with text; fewer than `MIN_EXTRACTED_CHARS` characters are refused |
 | an upload is refused with «The file exceeds the maximum allowed size.» | the file is larger than `MAX_UPLOAD_SIZE_MB` | raise the variable (Nginx and the backend read the same value) and run `docker compose up -d` |

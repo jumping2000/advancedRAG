@@ -10,9 +10,9 @@ I dettagli tecnici stanno nelle pagine d'area: [fondazioni](../../system/fondazi
 
 ### Sul server
 
-- Docker Engine con il plugin Compose (il comando `docker compose`, Compose v2). I comandi di questa guida sono stati provati con Docker 29.9 e Compose 5.6.
+- Docker Engine con il plugin Compose (il comando `docker compose`, Compose v2). I comandi di primo avvio, HTTPS, controllo di salute, copia di sicurezza, ripristino, aggiornamento e rimozione sono stati provati con Docker 29.9 e Compose 5.6. Non eseguiti: `ollama pull`, l'avvio del reranker su CPU e su GPU, e `git pull`; le sezioni sul reranker vengono da `compose.yaml`, ADR-004 e `.env.example` (la loro configurazione di `docker compose` è stata controllata con `config`).
 - Git, per scaricare il codice. Per avviare lo stack non servono Python, `uv` né Node.js: le immagini costruiscono tutto.
-- Accesso, dal server, ai registri che la build e l'avvio usano: le immagini Docker (`paradedb/paradedb`, `redis`, `nginx`, `python`, `node`), npm e PyPI per la build, e Hugging Face solo per il reranker facoltativo.
+- Accesso, dal server, ai registri che la build e l'avvio usano: le immagini Docker (`paradedb/paradedb`, `redis`, `nginx`, `python`, `node`, e `ghcr.io/huggingface/text-embeddings-inference` per il reranker facoltativo), npm e PyPI per la build, e Hugging Face per il modello del reranker facoltativo.
 - Una porta libera sull'host per Nginx, l'unico servizio che ne pubblica una: `HTTP_PORT` (80 di default) e `HTTPS_PORT` (443 di default) se usi HTTPS.
 - Il progetto non dà indicazioni di dimensionamento. Le parti pesanti sono i modelli dei servizi che fornisci tu e, se lo usi, il reranker.
 
@@ -97,23 +97,23 @@ Uno stack nuovo risponde `degraded` su `/api/health` finché non configuri i ser
 
 Il file `.env` sta nella radice del repository ed è letto da Docker Compose. Una riga è `NOME=valore`; una variabile vuota o assente prende il valore predefinito della tabella. Dopo una modifica, esegui di nuovo `docker compose up -d` (con le stesse opzioni `-f` e `--profile` dell'avvio) e Compose ricrea i servizi le cui variabili sono cambiate.
 
-- **Predefinito** è il valore usato quando la variabile è assente o vuota. Dove c'è scritto *vuoto*, vuoto significa che la funzione è spenta o che il valore non è impostato.
+- **Predefinito** è il valore usato quando la variabile è assente o vuota. Dove c'è scritto *vuoto*, vuoto significa che la funzione è spenta o che il valore non è impostato. Dove c'è scritto *nessuno*, non c'è un valore predefinito: Compose si rifiuta di partire se la variabile è assente o vuota (l'esempio, quando c'è, è il valore di `.env.example`).
 - **Obbligatoria** dice quando lo stack non parte senza la variabile.
-- Backend e worker ricevono insiemi diversi: il worker non riceve le variabili della chat e il backend non riceve quelle di Docling e dell'ingestione; il significato dice quando una variabile è letta solo dal worker.
-- Un valore non valido ferma il backend all'avvio con un messaggio che nomina la variabile e non mostra mai il valore né una chiave. Leggilo con `docker compose logs backend`.
+- Backend e worker ricevono insiemi diversi. Entrambi ricevono gli URL di database, Redis, Ollama e Docling, `UPLOAD_DIR` e le variabili `EMBEDDING_*` e `CHUNK_*`. Solo il worker riceve `DOCLING_API_KEY`, `DOCLING_TIMEOUT_SECONDS`, `DOCLING_INCLUDE_IMAGES`, `INGESTION_*`, `MIN_EXTRACTED_CHARS` e `FAILED_ORIGINAL_RETENTION_DAYS`. Le altre variabili vanno solo al backend, tranne le porte e `RERANK_COMPOSE_MODEL`, che legge Compose stesso (`MAX_UPLOAD_SIZE_MB` va anche a Nginx e `RERANK_CANDIDATES` anche al reranker).
+- Un valore non valido ferma il backend all'avvio. Il messaggio nomina la variabile (un errore di campo la nomina in minuscolo, per esempio `generation_model`) e alcuni messaggi stampano i numeri sbagliati; gli URL e le chiavi non vengono mai mostrati. Leggilo con `docker compose logs backend`.
 - Le chiavi e le password sono vuote in `.env.example`. Non committare mai il tuo `.env`.
 
 ### Stack e accesso
 
 | Variabile | Significato | Predefinito | Obbligatoria |
 |---|---|---|---|
-| `POSTGRES_PASSWORD` | Password dell'utente PostgreSQL `rag` (database `ragdb`). Ogni carattere è ammesso; se contiene `$`, scrivi il valore tra apici singoli. Il database la imposta solo al primo avvio (vedi Risoluzione dei problemi). | *vuoto* | sì: senza, Compose non parte |
+| `POSTGRES_PASSWORD` | Password dell'utente PostgreSQL `rag` (database `ragdb`). Ogni carattere è ammesso; se contiene `$`, scrivi il valore tra apici singoli. Il database la imposta solo al primo avvio (vedi Risoluzione dei problemi). | *nessuno* | sì: senza, Compose non parte |
 | `HTTP_PORT` | Porta dell'host di Nginx, l'unico servizio che pubblica una porta. Con `compose.tls.yaml` resta pubblicata e reindirizza a HTTPS. | `80` | no |
 | `HTTPS_PORT` | Porta dell'host di Nginx per HTTPS. Si legge solo avviando con `compose.tls.yaml`; HTTPS richiede anche `cert.pem` e `key.pem` in `nginx/certs/`. | `443` | solo con `compose.tls.yaml` |
 | `DATABASE_URL` | URL del database. Con Docker Compose lo fissa `compose.yaml` (`postgresql+asyncpg://rag@db:5432/ragdb`) e questo valore non viene usato; impostalo solo per avviare il backend fuori da Compose (la password viene da `POSTGRES_PASSWORD`). | *vuoto* | no: solo fuori da Compose |
 | `REDIS_URL` | URL di Redis (sessioni e coda di ingestione). Con Docker Compose lo fissa `compose.yaml` (`redis://redis:6379/0`) e questo valore non viene usato; impostalo solo per avviare il backend fuori da Compose. | *vuoto* | no: solo fuori da Compose |
-| `OLLAMA_BASE_URL` | URL base di Ollama, che Compose non avvia, come lo raggiungono i container (non `localhost`). Ollama fornisce i vettori dei documenti e delle domande; il controllo di salute chiama `GET /api/version`. Sostituisci l'indirizzo d'esempio. | `http://ollama.example.internal:11434` | sì: Compose rifiuta un valore vuoto |
-| `DOCLING_BASE_URL` | URL base di docling-serve, che Compose non avvia, come lo raggiungono i container. Docling legge i file PDF, DOCX, PPTX e XLSX; il controllo di salute chiama `GET /health`. Sostituisci l'indirizzo d'esempio. | `http://docling.example.internal:5001` | sì: Compose rifiuta un valore vuoto |
+| `OLLAMA_BASE_URL` | URL base di Ollama, che Compose non avvia, come lo raggiungono i container (non `localhost`). Ollama fornisce i vettori dei documenti e delle domande; il controllo di salute chiama `GET /api/version`. Sostituisci l'indirizzo d'esempio. | *nessuno* (esempio: `http://ollama.example.internal:11434`) | sì: Compose rifiuta un valore vuoto |
+| `DOCLING_BASE_URL` | URL base di docling-serve, che Compose non avvia, come lo raggiungono i container. Docling legge i file PDF, DOCX, PPTX e XLSX; il controllo di salute chiama `GET /health`. Sostituisci l'indirizzo d'esempio. | *nessuno* (esempio: `http://docling.example.internal:5001`) | sì: Compose rifiuta un valore vuoto |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | Secondi che `/api/health` attende per ogni controllo. | `2` | no |
 | `ADMIN_USERNAME` | Nome utente del primo admin: da 3 a 64 lettere, cifre, `.`, `_` o `-`. Si legge solo all'avvio, quando non esiste un admin attivo; poi viene ignorato. | *vuoto* | sì, al primo avvio |
 | `ADMIN_PASSWORD` | Password del primo admin, di almeno 12 caratteri. Si legge come `ADMIN_USERNAME`. | *vuoto* | sì, al primo avvio |
@@ -238,7 +238,7 @@ docker compose --profile rerank up --build
 Usa l'immagine CPU e non scarica nessuna immagine GPU. Per usarlo:
 
 1. In `.env` imposta `RERANK_BASE_URL=http://reranker` e `RERANK_API=tei`. Compose non le imposta per te. `RERANK_COMPOSE_MODEL` è il modello di Hugging Face che serve (di default `BAAI/bge-reranker-v2-m3`) e `RERANK_CANDIDATES` il massimo di testi che accetta per richiesta.
-2. Al primo avvio il servizio scarica il modello da Hugging Face nel volume `reranker-models` e diventa sano solo dopo lo scarico (sono concessi fino a 30 minuti). Fino ad allora `rerank` è `unreachable` nel controllo di salute e la chat mantiene l'ordine della fusione. Gli avvii successivi leggono il modello dal volume.
+2. Al primo avvio il servizio scarica il modello da Hugging Face nel volume `reranker-models` e diventa sano solo dopo il download (sono concessi fino a 30 minuti). Fino ad allora `rerank` è `unreachable` nel controllo di salute e la chat mantiene l'ordine della fusione. Gli avvii successivi leggono il modello dal volume.
 3. Il servizio non pubblica porte sull'host: lo raggiunge solo il backend, come `http://reranker`.
 4. Quando il controllo di salute mostra `rerank` come `ok`, l'admin attiva «Reranker» nella pagina «Impostazioni».
 
@@ -267,6 +267,12 @@ Quali GPU serve l'immagine predefinita (decisione ADR-004):
 
 ```bash
 curl -i http://localhost/api/health
+```
+
+Se hai cambiato `HTTP_PORT`, scrivila nell'indirizzo (`http://localhost:<HTTP_PORT>/api/health`). Con `compose.tls.yaml` quell'indirizzo HTTP semplice risponde 301: chiedi quello HTTPS (`-k` solo per un certificato autofirmato, e aggiungi `:<HTTPS_PORT>` se l'hai cambiata):
+
+```bash
+curl -k -i https://localhost/api/health
 ```
 
 Su uno stack nuovo, con configurati solo i servizi obbligatori, risponde 200 e:
@@ -356,7 +362,7 @@ Il backend applica le nuove migrazioni del database al proprio avvio, e il worke
 docker compose down -v
 ```
 
-`-v` cancella anche i volumi dei servizi del comando: il database, gli upload e, con il profilo, il modello del reranker. Tutti i dati vanno persi: fai prima una copia di sicurezza.
+`-v` cancella anche i volumi dei servizi che il comando include: il database e gli upload. Senza `--profile rerank` il comando lascia stare il container del reranker e il suo volume `reranker-models` (verificato); aggiungi `--profile rerank` per rimuovere anche quelli. Tutti i dati del database vanno persi: fai prima una copia di sicurezza.
 
 ## Risoluzione dei problemi
 
@@ -372,7 +378,7 @@ docker compose down -v
 | `/api/health` risponde 503 | il database o Redis è `unreachable` | `docker compose ps`, poi `docker compose logs db` o `docker compose logs redis` |
 | `ollama` o `docling` è `unreachable` | indirizzo sbagliato, servizio spento, indirizzo che i container non raggiungono (non `localhost`), oppure nessuna risposta 2xx entro `HEALTH_CHECK_TIMEOUT_SECONDS` | prova l'indirizzo da dentro: `docker compose exec backend python -c "import urllib.request; print(urllib.request.urlopen('http://ollama.example.internal:11434/api/version', timeout=5).status)"` con il tuo indirizzo; alza `HEALTH_CHECK_TIMEOUT_SECONDS` se il servizio è solo lento |
 | `worker` è `unreachable` e i documenti restano «In coda» | il worker non è in esecuzione o non è sano | `docker compose ps worker`, `docker compose logs worker`, `docker compose up -d worker` |
-| un documento è «Fallito» con un motivo su Docling | Docling non è raggiungibile, rifiuta la chiave, oppure risponde con un errore o 504 | controlla `DOCLING_BASE_URL`, `DOCLING_API_KEY` e il log di Docling; alza il suo limite sincrono con `DOCLING_TIMEOUT_SECONDS`; poi premi «Riprova» (l'originale resta per `FAILED_ORIGINAL_RETENTION_DAYS` giorni) |
+| un documento è «Fallito» con un motivo su Docling | Docling non è raggiungibile, rifiuta la chiave, oppure risponde con un errore o 504 | controlla `DOCLING_BASE_URL`, `DOCLING_API_KEY` e il log di Docling; per un 504 alza `DOCLING_SERVE_MAX_SYNC_WAIT` sul server docling-serve e, insieme, `DOCLING_TIMEOUT_SECONDS` (l'attesa del worker); poi premi «Riprova» (l'originale resta per `FAILED_ORIGINAL_RETENTION_DAYS` giorni) |
 | un documento è «Fallito» con un motivo su Ollama o sui vettori | Ollama non è raggiungibile, il modello non è stato scaricato, oppure i vettori hanno una dimensione diversa da `EMBEDDING_DIMENSIONS` | controlla `OLLAMA_BASE_URL`, esegui `ollama pull` del modello, fai coincidere `EMBEDDING_DIMENSIONS` con la dimensione che il modello restituisce; poi premi «Riprova» |
 | un documento è «Non supportato» | non è stato estratto abbastanza testo (per esempio una scansione: non c'è OCR) | usa un file con testo; sotto `MIN_EXTRACTED_CHARS` caratteri il documento viene rifiutato |
 | un caricamento è rifiutato con «Il file supera la dimensione massima consentita.» | il file è più grande di `MAX_UPLOAD_SIZE_MB` | alza la variabile (Nginx e backend leggono lo stesso valore) ed esegui `docker compose up -d` |
