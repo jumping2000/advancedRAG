@@ -1,7 +1,7 @@
 # Area: chat (hybrid retrieval, streamed answers, conversations)
 
-- Last aligned: 2026-11-18
-- Linked specs: SPEC-2026-11-17-fase-3-chat
+- Last aligned: 2026-11-20
+- Linked specs: SPEC-2026-11-17-fase-3-chat, SPEC-2026-11-20-fase-4-rerank-rewrite (in progress: T-02, the rewriting)
 
 ## Current behaviour
 A user opens a knowledge base (KB) they are assigned to, asks a question in Italian or English and reads the answer while
@@ -52,6 +52,25 @@ kept in `app.state`). Every statement that reads `chunks` carries, in the same S
    decide ties (then the better vector rank, then the chunk id), and the stored score is the float of the fraction;
 5. the first `CHAT_CONTEXT_CHUNKS` (8) chunks are loaded (`load_candidates`, same SQL scope); if they are gone by now the answer
    is completed with the notice `no_documents`.
+
+**The rewriting of the question (phase 4, `app/chat/rewrite.py`).** The answer reads the switches of `app_settings` once, right
+after its PENDING check, and keeps them to its end; the rewriting is active when `rewrite_enabled` is on and `REWRITE_BASE_URL`
+is set (`active_steps`). After the `no_documents` check (a KB with nothing to search calls no service) the history is read
+by the rules above; when the rewriting is active and that history is not empty (a first question, or one whose earlier
+exchanges all failed or have no text, is never rewritten), `QuestionRewriter` posts `{REWRITE_BASE_URL}/chat/completions` with
+`stream: false`, `REWRITE_MODEL`, `Authorization: Bearer REWRITE_API_KEY` when set, and the messages of
+`build_rewrite_messages`: `REWRITE_INSTRUCTIONS` (in English: return only the standalone question, in the language of the
+question, do not answer, do not add information, do not change its meaning), the same history, and the question. The text of
+`choices[0].message.content`, without the spaces at both ends and otherwise as it is (lines, quotes, a preamble), is what is
+embedded and searched by BM25; the model of the answer always gets the original question. The answer saves it in
+`messages.search_query` only when it differs from the question by `strip().casefold()`, else null. The fallback is the original
+question, with `search_query` null and the answer going on, with the reason `unreachable` (connection, an invalid URL or key),
+`http_error` (a status that is not 2xx; a redirect is never followed), `timeout` (one deadline of `REWRITE_TIMEOUT_SECONDS`
+over the whole request) or `invalid_response` (a body that is not a completion, over 1 MiB, or a text empty, longer than
+`CHAT_MAX_QUESTION_CHARS` or holding a NUL or a lone surrogate). A retry asks again with the switches of the retry:
+`restart_answer` puts `search_query` back to null. When the service was asked, one line is logged: `chat rewrite
+conversation=<id> message=<id> kb=<id> used=<true|false> reason=<reason|none> ms=<n>` (INFO when used, WARNING on a fallback),
+never a text. With the step off or not configured nothing changes from phase 3: no request, no line, `search_query` null.
 
 **The context** (`build_messages`): one `system` message (`SYSTEM_INSTRUCTIONS`, in English: use only the sources, say so when
 they do not contain the answer, answer in the language of the question, cite with `[n]`, one number per bracket pair, the
@@ -114,7 +133,7 @@ conversation of someone else, of a KB the user is no longer assigned to, unknown
   `updated_at` descending; an empty parameter is no filter; a filter that matches nothing or is not a UUID gives `[]`.
 - Deleting a KB deletes its conversations, messages and sources (cascade, `ON DELETE CASCADE`).
 - Schemas: `ConversationOut {id, kb_id, title, created_at, updated_at}`; `MessageOut {id, role, content, status, error_code,
-  notice, created_at, sources}`; `SourceOut {number, document_name, section_title, page_start, page_end}`. Logs hold ids, counts,
+  notice, created_at, sources, search_query}` (`search_query`: the searched question of a rewritten answer, else null); `SourceOut {number, document_name, section_title, page_start, page_end}`. Logs hold ids, counts,
   durations and error codes, never a question, an answer, a title, a chunk, a file name, a vector or the key.
 
 **Concurrency.** `ActiveAnswers` (`app.state.active_answers`, created at first use by `service.active_answers(app)`) maps a
@@ -453,7 +472,7 @@ erDiagram
   closed; (d) a list request already in flight when a delete succeeds can bring the deleted row back until the next load.
 - `spec.md` still says `@@@` for the BM25 operator in its Constraints text; the code uses `|||` (see The retrieval above). This
   page is the source of truth: a task does not change the spec.
-- No rewriting of the question, no reranker, no evaluation, no export, search or paging of the conversations, no feedback on the
+- No reranker yet (phase 4, T-03), no evaluation, no export, search or paging of the conversations, no feedback on the
   answers, no provider other than OpenAI-compatible (spec non-scope).
 
 ## Characterization tests
