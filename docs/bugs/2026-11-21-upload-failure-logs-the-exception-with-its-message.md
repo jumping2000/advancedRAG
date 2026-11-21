@@ -14,7 +14,8 @@
    `Logger.exception` writes the message of the exception and its whole traceback chain (with `exc_info`).
 2. Read the rule in the documents: `docs/system/ingestion.md:72` "only the document id and the error type are logged" (for the 500 of the upload and of the retry), `docs/system/ingestion.md:410-411` and `docs/system/fondazioni.md:115-116` "never content, file names, vectors or exception messages (REQ-102)".
 3. Every other log line of the application that handles an exception writes `type(error).__name__` (the retry route at `documents/routes.py:189`, the delete routes, `worker.py:80`, the chat in `chat/service.py:211` and `chat/routes.py:245-249`, whose comments say "the type, never the message").
-4. No test reads this line: `test_logging_privacy.py` (AC-046) covers the lines of the worker and `test_chat_logging_privacy.py` those of the chat, and `grep -rn "upload of document" backend/tests` finds nothing.
+4. What limits the harm, and what does not: `backend/app/db/session.py:12` creates the engine with `hide_parameters=True`, so a SQLAlchemy error does not echo the bound values (the file name is a parameter of the insert, not part of the statement text). The message that the database server sends is not covered by it: a PostgreSQL error such as a constraint violation carries its own `DETAIL` (for a check violation, "Failing row contains (...)", with the values of the row). That is why the severity stays low and the line is still worth limiting to the type of the error.
+5. No test reads this line: `test_logging_privacy.py` (AC-046) covers the lines of the worker and `test_chat_logging_privacy.py` those of the chat, and `grep -rn "upload of document" backend/tests` finds nothing.
 
 ## Actual vs expected behaviour
 - Actual: a failure after the file is stored (the database, Redis, an OS error) writes the message of the exception and its traceback, in the one place that is not limited to the type.
