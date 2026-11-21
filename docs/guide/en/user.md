@@ -115,7 +115,7 @@ Choose «Rename» next to the title. A field «New title» opens with «Save» a
 
 Choose «Delete» next to the title. The page asks *Delete the conversation "…"? Its messages will be removed too.*, with the title in place of the dots, and shows «Confirm» and «Cancel». Deleting is final: the conversation, its messages and its sources are removed, and the application cannot bring them back.
 
-Your conversations are yours: the other users cannot see them. The administrators can read every conversation, in their page «Conversations», but only read it: they cannot write in yours.
+Your conversations are yours: the other users cannot see them. The administrators can read every conversation and delete it, in their page «Conversations»: a conversation deleted by an administrator is gone for you too. They cannot ask, retry or rename in yours.
 
 ## Error messages
 
