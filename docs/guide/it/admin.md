@@ -105,7 +105,7 @@ I riquadri grigi nelle schermate di «Documenti» e «Conversazioni» coprono le
 
 Con una KB scelta, «File da caricare» apre il selettore di file del browser; puoi sceglierne più di uno. Ogni file viene inviato da solo e, mentre viene inviato, compare nell'elenco dei caricamenti con «Caricamento in corso…». Un file accettato diventa una riga della tabella con lo stato «In coda». Un file rifiutato non aggiunge righe: il suo nome resta nell'elenco dei caricamenti con il motivo.
 
-- Formati: PDF, DOCX, PPTX, XLSX, TXT e MD. L'estensione, il tipo dichiarato dal browser e l'inizio del file devono dire tutti lo stesso formato, quindi un file rinominato con un'altra estensione viene rifiutato. Il rifiuto è «Tipo di file non supportato. Sono ammessi PDF, DOCX, PPTX, XLSX, TXT e MD.»
+- Formati: PDF, DOCX, PPTX, XLSX, TXT e MD. L'estensione, il tipo dichiarato dal browser e l'inizio del file devono dire tutti lo stesso formato, quindi un file rinominato con un'altra estensione viene rifiutato, e lo stesso vale per un file TXT o MD che non è testo UTF-8. Il rifiuto è «Tipo di file non supportato. Sono ammessi PDF, DOCX, PPTX, XLSX, TXT e MD.»
 - Dimensione: al massimo 20 MB per file, salvo che l'amministratore dell'installazione abbia impostato un altro limite con `MAX_UPLOAD_SIZE_MB` nel file `.env` (vedi la [guida all'installazione](installation.md)). Un file più grande riceve «Il file supera la dimensione massima consentita.»
 - Un file vuoto riceve «Il file è vuoto.»
 - Un file con lo stesso contenuto di un documento già presente nella KB, qualunque sia il suo nome, riceve «Questo file è già presente nella knowledge base.» Vale anche per un documento fallito: per caricare di nuovo un file fallito devi prima eliminare la sua riga.
@@ -132,7 +132,7 @@ La colonna «Motivo» di un documento «Fallito» dice cosa è andato storto. La
 |---|---|
 | «Il servizio di lettura dei documenti (Docling) non è raggiungibile.» | Docling non ha risposto a nessun tentativo. Controlla che sia in funzione e che l'indirizzo sia giusto, poi «Riprova». |
 | «Il servizio di lettura dei documenti (Docling) ha restituito un errore.» | Docling ha risposto con un errore, o ha rifiutato la sua chiave. Controllalo come sopra, poi «Riprova». |
-| «Il file non può essere letto.» | Docling ha rifiutato il file, oppure un file TXT o MD non è testo UTF-8. «Riprova» non serve: correggi o converti il file e caricalo di nuovo. |
+| «Il file non può essere letto.» | Docling ha rifiutato il file: il problema è il file, non il servizio. «Riprova» non serve: correggi o converti il file e caricalo di nuovo. (Un file TXT o MD che non è testo UTF-8 non arriva fin qui: viene rifiutato al caricamento.) |
 | «Il servizio degli embedding (Ollama) non è raggiungibile.» | Ollama non ha risposto a nessun tentativo. Controlla che sia in funzione e l'indirizzo, poi «Riprova». |
 | «Il servizio degli embedding (Ollama) ha restituito un errore.» | Ollama ha risposto con un errore. Controllalo, insieme al modello di embedding che ha, poi «Riprova». |
 | «Il servizio degli embedding (Ollama) ha dato una risposta non valida.» | Ollama ha risposto, ma non con vettori utilizzabili. Controlla che il modello sia un modello di embedding, poi «Riprova». |
@@ -147,7 +147,7 @@ La colonna «Motivo» di un documento «Fallito» dice cosa è andato storto. La
 - «Il file originale non esiste più: carica di nuovo il documento.» L'originale è stato eliminato perché è scaduto il tempo per cui viene tenuto (vedi sotto). Il pulsante sparisce dalla riga: elimina il documento e carica di nuovo il file.
 - «Il documento non può essere riprovato: non è più nello stato Fallito.» Lo stato è cambiato nel frattempo, per esempio perché un altro amministratore l'ha già riprovato. La pagina rilegge l'elenco.
 
-«Elimina» c'è su ogni riga, qualunque sia lo stato. Apre la domanda *Eliminare il documento …? Verranno rimossi anche i suoi chunk.* con i pulsanti «Conferma» e «Annulla». L'eliminazione rimuove il documento, i suoi chunk e il suo originale, e non si può annullare. Le risposte già scritte restano come sono, ma una fonte che veniva da quel documento mostra «Fonte non più disponibile».
+«Elimina» c'è su ogni riga, qualunque sia lo stato. Apre la domanda *Eliminare il documento …? Verranno rimossi anche i suoi chunk.* con i pulsanti «Conferma» e «Annulla». L'eliminazione rimuove il documento, i suoi chunk e il suo originale, e non si può annullare. Le risposte già scritte restano come sono: una fonte che veniva da quel documento conserva la sua riga con il nome del documento, e il suo estratto dice «Fonte non più disponibile» quando lo apri.
 
 ### I file originali
 
@@ -169,7 +169,7 @@ La pagina «Conversazioni» ti fa leggere le conversazioni di tutti gli utenti, 
 
 La tabella elenca ogni conversazione di ogni utente, con le colonne «Titolo», «Utente», «Knowledge base», «Data», «Messaggi» e «Azioni». I due filtri «Knowledge base» e «Utente» partono entrambi da «Tutte» e «Tutti» (le voci del primo sono «Tutte» e le KB, quelle del secondo «Tutti» e gli utenti); scegline uno o entrambi per restringere l'elenco. Senza conversazioni la pagina dice «Nessuna conversazione.»
 
-Scegli un titolo per leggere la conversazione sotto la tabella: i suoi messaggi, in ordine, con le fonti di ogni risposta. Una fonte è la riga con il suo numero e il nome del documento, come `[1] manuale.txt`, con il pulsante «Mostra estratto», che apre il passaggio usato dalla risposta («Nascondi estratto» lo chiude); se nel frattempo il documento è stato eliminato vedi «Fonte non più disponibile». Sotto una risposta può esserci anche la riga *Ricerca: …*, con la domanda che è stata cercata: non c'è su ogni risposta, e la [guida utente](user.md) dice quando compare.
+Scegli un titolo per leggere la conversazione sotto la tabella: i suoi messaggi, in ordine, con le fonti di ogni risposta. Una fonte è la riga con il suo numero e il nome del documento, come `[1] manuale.txt`, seguita, quando il documento li ha, dal titolo della sezione (` · sezione`) e dalle pagine (` · p. 3`, oppure ` · pp. 3–5` per un intervallo), e dal pulsante «Mostra estratto», che apre il passaggio usato dalla risposta («Nascondi estratto» lo chiude); se nel frattempo il documento è stato eliminato, l'estratto dice «Fonte non più disponibile». Sotto una risposta può esserci anche la riga *Ricerca: …*, con la domanda che è stata cercata: non c'è su ogni risposta, e la [guida utente](user.md) dice quando compare.
 
 La conversazione non ha il campo della domanda né «Riprova»: un amministratore non può fare domande, riprovare né rinominare in una conversazione di un altro utente. Le conversazioni che hai avuto tu, come amministratore, sono nello stesso elenco.
 
@@ -195,7 +195,7 @@ Una modifica vale per le risposte che iniziano dopo; una risposta già in corso 
 Un passo funziona solo se il suo servizio è configurato nel file `.env` dell'installazione, cosa che si fa fuori dall'applicazione. Quando non lo è, l'interruttore è disabilitato e la pagina dice «Non configurato» sotto di esso: da qui non puoi attivarlo.
 
 - Per «Riscrittura della domanda»: `REWRITE_BASE_URL` e `REWRITE_MODEL`.
-- Per «Reranker»: `RERANK_BASE_URL` e `RERANK_API` (e `RERANK_MODEL` per un reranker nel formato `cohere`), oppure il reranker che lo stack può avviare per te.
+- Per «Reranker»: basta `RERANK_BASE_URL` perché l'interruttore sia disponibile. Il formato del servizio è `RERANK_API`, che è `tei` se non ne imposti un altro, e solo un servizio nel formato `cohere` richiede anche `RERANK_MODEL`. Anche il reranker che lo stack può avviare per te si raggiunge con `RERANK_BASE_URL`.
 
 La [guida all'installazione](installation.md#riscrittura-e-reranker) elenca le variabili dei due passi, e [il reranker su CPU](installation.md#il-reranker-su-cpu) spiega come avviare il reranker dello stack. Dopo aver cambiato il file `.env`, riavvia lo stack come dice quella guida; poi l'interruttore non è più disabilitato.
 
