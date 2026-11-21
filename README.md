@@ -17,7 +17,7 @@ It is a Retrieval-Augmented Generation (RAG) application: the passages that answ
 
 - **Several knowledge bases, kept apart.** A user sees only the KBs assigned to them and their own conversations; documents, sources and conversations of a KB are never returned to someone who is not authorized for it.
 - **Two roles.** The admin manages users, KBs, documents and settings, and reads the conversations of everyone; the user chats on the assigned KBs.
-- **Ingestion of PDF, DOCX, PPTX, XLSX, TXT and MD files.** A worker reads each file (PDF, DOCX, PPTX and XLSX through Docling), cuts it into chunks and indexes them with the embeddings of Ollama; the admin sees the state of every document and can retry a failed one. The uploaded originals are deleted once processed.
+- **Ingestion of PDF, DOCX, PPTX, XLSX, TXT and MD files.** A worker reads each file (PDF, DOCX, PPTX and XLSX through Docling), cuts it into chunks and indexes them with the embeddings of Ollama; the admin sees the state of every document and can retry a failed one. The original of a document is deleted once the document is «Ready» or «Unsupported»; that of a «Failed» document is kept for `FAILED_ORIGINAL_RETENTION_DAYS` days (7 by default) so that «Retry» works.
 - **Hybrid retrieval.** Vector search (pgvector) and keyword search (BM25, pg_search) are merged with Reciprocal Rank Fusion.
 - **Two optional steps.** Rewriting a follow-up question as a standalone one, and a reranker that reorders the passages found. Each runs only when its service is configured in `.env` and the admin has switched it on in the page «Settings».
 - **Streamed answers with numbered sources.** Each citation [n] opens the excerpt it refers to; when the question was rewritten, the answer shows the question that was searched («Search: …»). Conversations are saved: new, rename, delete.
@@ -38,10 +38,11 @@ flowchart LR
     worker -->|"embeds chunks"| ollama["Ollama (external)"]
     backend -->|"embeds the question"| ollama
     backend -->|"streams the answer"| generation["generation provider (external)"]
+    backend -.->|"optional"| rewrite["rewriting service (external)"]
     backend -.->|"optional"| reranker["reranker (profile rerank)"]
 ```
 
-`nginx` is the only service that publishes a port. `backend` and `worker` share the same image; the `worker` takes the ingestion jobs from `redis` and writes the chunks and vectors in `db`. The dotted line is optional: the reranker of Compose starts only with the profile `rerank`, on CPU or on an NVIDIA GPU. How the parts fit together, how a document and a question travel through them and how each KB is isolated is in the [architecture guide](docs/guide/en/architecture.md).
+`nginx` is the only service that publishes a port. `backend` and `worker` share the same image; the `worker` takes the ingestion jobs from `redis` and writes the chunks and vectors in `db`. The dotted lines are optional: the rewriting service is external, and the reranker of Compose starts only with the profile `rerank`, on CPU or on an NVIDIA GPU. How the parts fit together, how a document and a question travel through them and how each KB is isolated is in the [architecture guide](docs/guide/en/architecture.md).
 
 ## Quick start
 
