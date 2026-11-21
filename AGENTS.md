@@ -41,17 +41,21 @@ Nginx, Docker Compose; Ollama and Docling are external services.
 - Lock order of the chat: every writer that takes a conversation row locks it BEFORE any of its messages (`start_answer`,
   `complete_answer`, `restart_answer`, the delete and the cascade of a KB); the opposite order is a deadlock.
 - `ActiveAnswers` (`app.state.active_answers`) is in memory, single-process (ADR-003): one backend process, or a new ADR.
-- A `user` gets the same 404 for the conversation of another user, of an unassigned KB, an unknown id and an id that is not
-  a UUID, never 403; the admin reads every conversation and writes in none of another user's (403).
-- `trace_check.py` on a whole spec needs the test folders as ONE flag with two paths: `--tests backend/tests frontend/src`.
+- A `user` gets the same 404 for another user's conversation, an unassigned KB, an unknown id and an id that is not a UUID,
+  never 403; the admin reads and deletes every conversation, but asks, retries or renames in none of another user's (403).
+- `trace_check.py` on a whole spec needs the test folders as ONE flag with two paths: `--tests backend/tests frontend/src`;
+  a test file that names several specs cites `SPEC-<id>/AC-nnn`: a short `AC-nnn` there counts for no spec.
+- Guides (`docs/guide/en|it/`) and READMEs change in both languages together; `backend/tests/test_docs_*.py` and
+  `test_readme.py` (in verify) check the `.env.example` variables, interface texts as «text» exactly as in
+  `frontend/src/i18n/*.json`, the titles and the twin links. Screenshots: `uv run --directory backend pytest -m screenshots`
+  (opt-in, port 18980, never in verify or CI), after a UI change.
 
 ## Rules
 - Do not modify: applied database migrations already merged into `main` (`backend/migrations/versions/`): add a new one
 - Sensitive areas: `backend/app/auth/`, `backend/app/documents/` (upload validation, file storage), `backend/app/chat/`
   (isolation of conversations and sources), `backend/app/app_settings/` (admin switches), `backend/migrations/`,
   `compose.yaml`, `compose.rerank-gpu.yaml`, `nginx/`, `.github/workflows/`
-- Dependencies: only those of `docs/adr/ADR-001-toolchain-fase-1.md`, `docs/adr/ADR-002-ingestion.md` and
-  `docs/adr/ADR-004-rerank-rewrite.md` (reranker image, no new library); any other is asked first.
+- Dependencies: only those of `docs/adr/` ADR-001, ADR-002 and ADR-004 (reranker image, no new library); others: ask first.
 - A behaviour change needs a test written from the ACs before the code; no task is done without a green `verify.py`.
 - Ambiguity or missing requirements: stop and ask, do not assume.
 - Behaviour changes: update the spec or the area page in `docs/system/` and the guides `docs/guide/en|it/` in the same PR.
@@ -66,18 +70,15 @@ Nginx, Docker Compose; Ollama and Docling are external services.
   fakes; real services only in opt-in live tests.
 
 ## Decision rights
-A decision no line names counts as "Asks first". The "Never" list only grows: the plugin's rules apply even if a line is
-removed here.
+A decision no line names counts as "Asks first". "Never" only grows: the plugin's rules apply even if a line is removed.
 
 ### Decides alone (record each one under "Decisions taken alone" in the PR description)
 - Internal names and structure within the conventions and the plan's interfaces
-- Library calls, algorithms and data structures the plan leaves open
-- Test data and test structure; log messages
+- Library calls, algorithms and data structures the plan leaves open; test data and test structure; log messages
 
 ### Asks first (stop and ask, with options)
 - Anything a user can observe that the spec leaves open: values, limits, defaults, messages with business meaning
-- Data model or public interface changes beyond the plan
-- A new dependency, or a deviation from an ADR
+- Data model or public interface changes beyond the plan; a new dependency, or a deviation from an ADR
 - A change to a file outside the task's files
 - Any call to an external service (OpenAI, Ollama, Docling, other APIs) not already configured by the spec
 
@@ -95,6 +96,5 @@ removed here.
   chunks, indexing profiles and indexes, retention of originals, Documents page), with the notes for phase 3
 - `docs/system/chat.md`: chat (vector + BM25 + RRF, optional rewriting and reranker, SSE through Nginx, conversations,
   messages, sources and «Ricerca: …», admin read-only page "Conversazioni", `ActiveAnswers`), with its known limits
-
-## Documentation
-- Specs in `docs/specs/<id>/` (read `spec.md` and `plan.md` before code); bugs in `docs/bugs/`; areas in `docs/system/`.
+- `docs/guide/en|it/`, `README.md`, `README.it.md`: user, admin, installation and architecture guides, with screenshots
+- Specs `docs/specs/<id>/` (read `spec.md`, `plan.md` first); areas `docs/system/`; bugs `docs/bugs/`; audit `docs/audit/`
