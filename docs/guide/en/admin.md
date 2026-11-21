@@ -99,13 +99,13 @@ The page «Documents» is where the documents of a KB are uploaded and followed.
 
 ![The page «Documents»: the choice of the KB, «Files to upload» and the table of the documents, all «Ready»](../images/en/admin-documents.png)
 
-The grey boxes in the screenshots of «Documents» and «Conversations» cover the dates: they are hidden on purpose, because they change at every capture, and on your screen you see them. The text of the file chooser ("Choose Files", "No file chosen") is drawn by the browser in its own language, not by the page: the page follows the language of the interface, the chooser follows the browser. In the Italian screenshot of the Italian guide it stays in English for this reason.
+The grey boxes in the screenshots of «Documents» and «Conversations» cover the dates: they are hidden on purpose, because they change at every capture, and on your screen you see them. The text of the file chooser ("Choose Files", "No file chosen") is drawn by the browser in its own language, not by the page, so it can differ from the language of the interface: the page follows the interface, the chooser follows the browser.
 
 ### Upload files
 
 With a KB chosen, «Files to upload» opens the file chooser of the browser; you can select more than one file. Each file is sent on its own, and while it is sent it appears in the list of uploads with «Uploading…». A file that is accepted becomes a row of the table with the status «Queued». A file that is refused adds no row: its name stays in the list of uploads with the reason.
 
-- Formats: PDF, DOCX, PPTX, XLSX, TXT and MD. The extension, the type the browser declares and the beginning of the file must all say the same format, so a file renamed to another extension is refused. The refusal is «File type not supported. Allowed: PDF, DOCX, PPTX, XLSX, TXT and MD.»
+- Formats: PDF, DOCX, PPTX, XLSX, TXT and MD. The extension, the type the browser declares and the beginning of the file must all say the same format, so a file renamed to another extension is refused, and so is a TXT or MD file that is not UTF-8 text. The refusal is «File type not supported. Allowed: PDF, DOCX, PPTX, XLSX, TXT and MD.»
 - Size: at most 20 MB per file unless the administrator of the installation set another limit with `MAX_UPLOAD_SIZE_MB` in the `.env` file (see the [installation guide](installation.md)). A larger file gets «The file exceeds the maximum allowed size.»
 - An empty file gets «The file is empty.»
 - A file with the same content as a document that is already in the KB, whatever its name, gets «This file is already in the knowledge base.» This includes a document that failed, so to upload a failed file again you first delete its row.
@@ -132,7 +132,7 @@ The column «Reason» of a «Failed» document says what went wrong. Most reason
 |---|---|
 | «The document parsing service (Docling) cannot be reached.» | Docling did not answer on any attempt. Check that it runs and that the address is right, then «Retry». |
 | «The document parsing service (Docling) returned an error.» | Docling answered with an error, or refused its key. Check it as above, then «Retry». |
-| «The file could not be read.» | Docling refused the file, or a TXT or MD file is not UTF-8 text. «Retry» will not help: fix or convert the file and upload it again. |
+| «The file could not be read.» | Docling refused the file: the problem is the file, not the service. «Retry» will not help: fix or convert the file and upload it again. (A TXT or MD file that is not UTF-8 text never gets this far: it is refused at upload.) |
 | «The embedding service (Ollama) cannot be reached.» | Ollama did not answer on any attempt. Check that it runs and the address, then «Retry». |
 | «The embedding service (Ollama) returned an error.» | Ollama answered with an error. Check it and the embedding model it has, then «Retry». |
 | «The embedding service (Ollama) gave an invalid response.» | Ollama answered, but not with usable vectors. Check that the model is an embedding model, then «Retry». |
@@ -147,7 +147,7 @@ The column «Reason» of a «Failed» document says what went wrong. Most reason
 - «The original file no longer exists: upload the document again.» The original was deleted because the time it is kept ran out (see below). The button disappears from the row: delete the document and upload the file again.
 - «The document cannot be retried: it is no longer in the Failed state.» The status changed in the meantime, for example because another administrator already retried it. The page reads the list again.
 
-«Delete» is on every row, whatever its status. It opens the question *Delete the document …? Its chunks will be removed too.* with the buttons «Confirm» and «Cancel». Deleting removes the document, its chunks and its original, and cannot be undone. The answers already written stay as they are, but a source that came from that document shows «Source no longer available».
+«Delete» is on every row, whatever its status. It opens the question *Delete the document …? Its chunks will be removed too.* with the buttons «Confirm» and «Cancel». Deleting removes the document, its chunks and its original, and cannot be undone. The answers already written stay as they are: a source that came from that document keeps its line with the name of the document, and its excerpt says «Source no longer available» when you open it.
 
 ### The original files
 
@@ -169,7 +169,7 @@ The page «Conversations» lets you read the conversations of all the users, for
 
 The table lists every conversation of every user, with the columns «Title», «User», «Knowledge base», «Date», «Messages» and «Actions». The two filters «Knowledge base» and «User» both start at «All» (the choices of the first are «All» and the KBs, those of the second «All» and the users); choose one or both to narrow the list. With no conversation the page says «No conversations yet.»
 
-Choose a title to read the conversation under the table: its messages, in order, with the sources of each answer. A source is the line with its number and the name of the document, such as `[1] manual.txt`, with the button «Show excerpt», which opens the passage the answer used (and «Hide excerpt» closes it); if the document was deleted meanwhile you see «Source no longer available». Under an answer there can also be the line *Search: …*, with the question that was searched: it is not on every answer, and the [user guide](user.md) says when it appears.
+Choose a title to read the conversation under the table: its messages, in order, with the sources of each answer. A source is the line with its number and the name of the document, such as `[1] manual.txt`, followed when the document has them by the title of the section (` · section`) and the pages (` · p. 3`, or ` · pp. 3–5` for a range), and by the button «Show excerpt», which opens the passage the answer used (and «Hide excerpt» closes it); if the document was deleted meanwhile, the excerpt says «Source no longer available». Under an answer there can also be the line *Search: …*, with the question that was searched: it is not on every answer, and the [user guide](user.md) says when it appears.
 
 The conversation has no question field and no «Retry»: an administrator cannot ask, retry or rename in a conversation of another user. The conversations that you had yourself, as an administrator, are in the same list.
 
@@ -195,7 +195,7 @@ A change applies to the answers that start after it; an answer already being wri
 A step works only when its service is configured in the `.env` file of the installation, which is done outside the application. When it is not, the switch is disabled and the page says «Not configured» under it: you cannot switch it on from here.
 
 - For «Question rewriting»: `REWRITE_BASE_URL` and `REWRITE_MODEL`.
-- For «Reranker»: `RERANK_BASE_URL` and `RERANK_API` (and `RERANK_MODEL` for a reranker with the `cohere` format), or the reranker that the stack can start for you.
+- For «Reranker»: `RERANK_BASE_URL` is enough to make the switch available. The format of the service is `RERANK_API`, which is `tei` unless you set another one, and only a service in the `cohere` format also needs `RERANK_MODEL`. The reranker that the stack can start for you is reached through `RERANK_BASE_URL` too.
 
 The [installation guide](installation.md#rewriting-and-reranker) lists the variables of the two steps, and [the reranker on CPU](installation.md#the-reranker-on-cpu) explains how to start the reranker of the stack. After changing the `.env` file, restart the stack as that guide says; then the switch is no longer disabled.
 
