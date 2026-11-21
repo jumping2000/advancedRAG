@@ -21,8 +21,12 @@ What is checked, and how:
   language (every line, word for word, so the two cannot drift), come in the order clone, `cd`, `cp`, the variables,
   start, and name every variable that Compose refuses to start without (read from `compose.yaml`) and the first admin.
   The running of the commands is done by hand and listed, with its result, in the pull request (AC-017, REQ-103).
-- AC-010: `LICENSE` is byte for byte the `LICENSE.APACHE` of the installed distribution `packaging` (read with
-  `importlib.metadata`, no path written here); the section License names Apache-2.0 and links the file.
+- AC-010: `LICENSE` is the official Apache-2.0 text, the whole of it with its APPENDIX (202 lines): its SHA-256 is a
+  constant of this file, and the hash is taken after the line ends are normalised to `\\n` and a BOM is dropped, so a
+  checkout with `core.autocrlf` on Windows passes and any other change (one byte, a cut, another license) fails; there
+  is no `NOTICE`; the section License names Apache-2.0 and links the file.
+- Badge links: each of the 20 links is also compared with a reference list (`REFERENCE_BADGES`), so that the same
+  wrong link in both READMEs fails.
 That GitHub shows the license as `Apache-2.0` is seen on the page of the repository after the merge, not here.
 
 REQ-102: the READMEs name no address but the placeholders of `.env.example`, `localhost` and the sites of the badges.
@@ -30,7 +34,7 @@ REQ-102: the READMEs name no address but the placeholders of `.env.example`, `lo
 
 from __future__ import annotations
 
-import importlib.metadata
+import hashlib
 import os
 import re
 from itertools import groupby
@@ -78,6 +82,32 @@ TECHNOLOGIES = [
 ]
 LANGUAGES_IMAGE = f"{STATIC}IT%20%7C%20EN-"  # «IT | EN»: the space as %20 and the pipe as %7C
 METHOD_WORDS = "SDD playbook"
+# The image (without its query) and the link of each of the 20 badges, in order: the reference of the links
+REFERENCE_BADGES = [
+    (WORKFLOW_IMAGE, WORKFLOW_LINK),
+    (STATUS_IMAGES[1], f"{GITHUB}/blob/main/LICENSE"),
+    (STATUS_IMAGES[2], f"{GITHUB}/commits/main"),
+    (STATUS_IMAGES[3], f"{GITHUB}/issues"),
+    (STATUS_IMAGES[4], f"{GITHUB}/pulls"),
+    (f"{STATIC}Python-3.12-3776AB", f"{GITHUB}/blob/main/backend/pyproject.toml"),
+    (f"{STATIC}FastAPI-009688", f"{GITHUB}/blob/main/backend/pyproject.toml"),
+    (f"{STATIC}React-19-20232A", f"{GITHUB}/blob/main/frontend/package.json"),
+    (f"{STATIC}TypeScript-3178C6", f"{GITHUB}/blob/main/frontend/package.json"),
+    (f"{STATIC}PostgreSQL-ParadeDB-4169E1", f"{GITHUB}/blob/main/compose.yaml"),
+    (f"{STATIC}Redis-DC382D", f"{GITHUB}/blob/main/compose.yaml"),
+    (f"{STATIC}Docker%20Compose-2496ED", f"{GITHUB}/blob/main/compose.yaml"),
+    (f"{STATIC}Nginx-009639", f"{GITHUB}/tree/main/nginx"),
+    (REPOSITORY_IMAGES[0], GITHUB),
+    (REPOSITORY_IMAGES[1], GITHUB),
+    (REPOSITORY_IMAGES[2], f"{GITHUB}/stargazers"),
+    (REPOSITORY_IMAGES[3], f"{GITHUB}/forks"),
+    (REPOSITORY_IMAGES[4], f"{GITHUB}/graphs/contributors"),
+    (f"{STATIC}IT%20%7C%20EN-blue", f"{GITHUB}/tree/main/docs/guide"),
+    (f"{STATIC}SDD%20playbook-6f42c1", f"{GITHUB}/blob/main/AGENTS.md"),
+]
+# SHA-256 of the official text of the Apache License 2.0 (apache.org/licenses/LICENSE-2.0.txt, 202 lines with the
+# APPENDIX), with `\n` line ends and no BOM
+OFFICIAL_LICENSE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
 
 SECTIONS = {
     "en": ("Overview", "Main features", "Architecture at a glance", "Quick start", "Documentation", "License"),
@@ -275,6 +305,14 @@ def single_readme_badge_problems(name: str, items: list[tuple[str, str, str]]) -
             problems.append(f"{where}: the image must be on {SHIELDS} (or the workflow badge), it is {image}")
         if badge_kind(image) == "dynamic" and OWNER not in image:
             problems.append(f"{where}: a dynamic badge must point to {OWNER}, it is {image}")
+    for position, ((_, image, link), (reference_image, reference_link)) in enumerate(
+        zip(items, REFERENCE_BADGES, strict=False), 1
+    ):
+        base = image if image == WORKFLOW_IMAGE else image.split("?")[0]
+        if base != reference_image or link != reference_link:
+            problems.append(
+                f"{name}, badge {position}: expected {reference_image} -> {reference_link}, it is {image} -> {link}"
+            )
     if items[0][1] != WORKFLOW_IMAGE:
         problems.append(f"{name}: the first badge must be {WORKFLOW_IMAGE}, it is {items[0][1]}")
     elif items[0][2] != WORKFLOW_LINK:
@@ -448,31 +486,23 @@ def address_problems(root: Path, lang: str) -> list[str]:
     return problems
 
 
-def packaging_license() -> bytes:
-    """The bytes of `LICENSE.APACHE` of the installed distribution `packaging`."""
-    for path in importlib.metadata.distribution("packaging").files or []:
-        if path.name == "LICENSE.APACHE":
-            return Path(path.locate()).read_bytes()
-    raise AssertionError("the distribution packaging has no LICENSE.APACHE")
+def normalized(data: bytes) -> bytes:
+    """The bytes of a text file with a leading BOM dropped and `\\r\\n` and `\\r` read as `\\n`, as a checkout on
+    Windows with `core.autocrlf` writes it."""
+    return data.removeprefix(b"\xef\xbb\xbf").replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
-def license_problems(root: Path, reference: bytes) -> list[str]:
-    """AC-010: `LICENSE` is the reference text without a change, with `\\n` line ends, and there is no NOTICE."""
+def license_problems(root: Path, sha256: str) -> list[str]:
+    """AC-010: `LICENSE` is the official text (SHA-256 after the line ends are normalised); there is no NOTICE."""
     path = root / "LICENSE"
     if not path.is_file():
         return ["LICENSE: the file does not exist"]
-    data = path.read_bytes()
+    data = normalized(path.read_bytes())
     problems = []
-    if b"\r" in data:
-        problems.append("LICENSE: it has a carriage return (the text must have \\n line ends)")
-    if data != reference:
-        offset = next(
-            (i for i, (a, b) in enumerate(zip(data, reference, strict=False)) if a != b), min(len(data), len(reference))
-        )
-        problems.append(
-            f"LICENSE: it is not the reference text: {len(data)} bytes against {len(reference)}, "
-            f"first difference at byte {offset}"
-        )
+    found = hashlib.sha256(data).hexdigest()
+    if found != sha256:
+        lines = data.count(b"\n")
+        problems.append(f"LICENSE: it is not the official text: sha256 {found} ({lines} lines), expected {sha256}")
     if (root / "NOTICE").exists():
         problems.append("NOTICE: there must be no NOTICE file (REQ-009)")
     return problems
@@ -503,32 +533,15 @@ def assert_no_problems(problems: list[str]) -> None:
 
 
 def sample_badges() -> list[tuple[str, str, str]]:
-    """20 valid badges: what the checks accept."""
-    static = [
-        ("Python", f"{STATIC}Python-3.12-3776AB", f"{GITHUB}/blob/main/backend/pyproject.toml"),
-        ("FastAPI", f"{STATIC}FastAPI-009688", f"{GITHUB}/blob/main/backend/pyproject.toml"),
-        ("React", f"{STATIC}React-19-20232A", f"{GITHUB}/blob/main/frontend/package.json"),
-        ("TypeScript", f"{STATIC}TypeScript-3178C6", f"{GITHUB}/blob/main/frontend/package.json"),
-        ("PostgreSQL", f"{STATIC}PostgreSQL-ParadeDB-4169E1", f"{GITHUB}/blob/main/compose.yaml"),
-        ("Redis", f"{STATIC}Redis-DC382D", f"{GITHUB}/blob/main/compose.yaml"),
-        ("Docker Compose", f"{STATIC}Docker%20Compose-2496ED", f"{GITHUB}/blob/main/compose.yaml"),
-        ("Nginx", f"{STATIC}Nginx-009639", f"{GITHUB}/tree/main/nginx"),
-    ]
-    return [
-        ("verify", WORKFLOW_IMAGE, WORKFLOW_LINK),
-        ("license", STATUS_IMAGES[1], f"{GITHUB}/blob/main/LICENSE"),
-        ("last commit", f"{STATUS_IMAGES[2]}?style=flat", f"{GITHUB}/commits/main"),
-        ("issues", STATUS_IMAGES[3], f"{GITHUB}/issues"),
-        ("pull requests", STATUS_IMAGES[4], f"{GITHUB}/pulls"),
-        *static,
-        ("language", REPOSITORY_IMAGES[0], GITHUB),
-        ("size", REPOSITORY_IMAGES[1], GITHUB),
-        ("stars", REPOSITORY_IMAGES[2], f"{GITHUB}/stargazers"),
-        ("forks", REPOSITORY_IMAGES[3], f"{GITHUB}/forks"),
-        ("contributors", REPOSITORY_IMAGES[4], f"{GITHUB}/graphs/contributors"),
-        ("IT | EN", f"{LANGUAGES_IMAGE}blue", f"{GITHUB}/tree/main/docs/guide"),
-        ("SDD playbook", f"{STATIC}SDD%20playbook-6f42c1", f"{GITHUB}/blob/main/AGENTS.md"),
-    ]
+    """20 valid badges: what the checks accept (the images and links of `REFERENCE_BADGES`)."""
+    alts = [
+        "verify", "license", "last commit", "issues", "pull requests", "Python", "FastAPI", "React", "TypeScript",
+        "PostgreSQL", "Redis", "Docker Compose", "Nginx", "language", "size", "stars", "forks", "contributors",
+        "IT | EN", "SDD playbook",
+    ]  # fmt: skip
+    items = [(alt, image, link) for alt, (image, link) in zip(alts, REFERENCE_BADGES, strict=True)]
+    items[2] = (items[2][0], f"{items[2][1]}?style=flat", items[2][2])  # a query is allowed on a dynamic badge
+    return items
 
 
 def badge_markdown(items: list[tuple[str, str, str]]) -> str:
@@ -570,9 +583,17 @@ def readme_text(lang: str, items: list[tuple[str, str, str]] | None = None, **re
     return f"# advancedRAG\n\n{twin}\n\n{badge_markdown(items)}\n\n{sections}\n"
 
 
-REFERENCE_LICENSE = (
+REFERENCE_TERMS = (
     b"\n                                 Apache License\n                           Version 2.0, January 2004\n"
+    b"\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n"
+    b"\n   END OF TERMS AND CONDITIONS\n"
 )
+REFERENCE_APPENDIX = (
+    b"\n   APPENDIX: How to apply the Apache License to your work.\n\n   Copyright [yyyy] [name of copyright owner]\n"
+    b'\n   Licensed under the Apache License, Version 2.0 (the "License");\n'
+)
+REFERENCE_LICENSE = REFERENCE_TERMS + REFERENCE_APPENDIX
+REFERENCE_SHA256 = hashlib.sha256(REFERENCE_LICENSE).hexdigest()
 
 
 def write(path: Path, content: str | bytes) -> Path:
@@ -692,6 +713,33 @@ def test_AC_003_a_different_link_in_one_readme_fails(tmp_path: Path) -> None:
     write(root / README["it"], readme_text("it", items))
 
     assert any(problem.startswith("badge 4:") for problem in badge_problems(root))
+
+
+def test_AC_003_the_same_wrong_link_in_both_readmes_fails_against_the_reference(tmp_path: Path) -> None:
+    items = sample_badges()
+    items[3] = (items[3][0], items[3][1], f"{GITHUB}/pulls")  # the issues badge links the pull requests, twice
+    items[18] = (items[18][0], items[18][1], f"{GITHUB}/tree/main/docs")
+    root = build_tree(tmp_path)
+    for lang in LANGS:
+        write(root / README[lang], readme_text(lang, items))
+
+    problems = badge_problems(root)
+
+    assert not any(problem.startswith("badge ") for problem in problems), "the two READMEs agree with each other"
+    for name in README.values():
+        assert any(f"{name}, badge 4: expected" in problem and f"{GITHUB}/issues" in problem for problem in problems)
+        assert any(f"{name}, badge 19: expected" in problem for problem in problems)
+    assert len([problem for problem in problems if ": expected" in problem]) == 4
+
+
+def test_AC_003_a_badge_with_another_image_at_its_place_fails_against_the_reference(tmp_path: Path) -> None:
+    items = sample_badges()
+    items[10] = (items[10][0], f"{STATIC}Redis-FF0000", items[10][2])  # same words, another color: not the reference
+    root = build_tree(tmp_path)
+    for lang in LANGS:
+        write(root / README[lang], readme_text(lang, items))
+
+    assert any("badge 11: expected" in problem for problem in badge_problems(root))
 
 
 def test_AC_003_a_badge_without_a_link_fails(tmp_path: Path) -> None:
@@ -1083,13 +1131,15 @@ def test_REQ_102_an_internal_address_or_another_host_fails_and_is_named(tmp_path
 # AC-010: the license ---------------------------------------------------------------------------------------
 
 
-def test_AC_010_license_is_identical_to_the_apache_text_of_the_installed_packaging() -> None:
-    reference = packaging_license()
+def test_AC_010_license_has_the_appendix_of_the_official_text() -> None:
+    path = REPO_ROOT / "LICENSE"
+    text = path.read_bytes() if path.is_file() else b""
 
-    assert b"Apache License" in reference[:200]
-    assert b"Version 2.0, January 2004" in reference[:200]
-    assert b"END OF TERMS AND CONDITIONS" in reference
-    assert_no_problems(license_problems(REPO_ROOT, reference))
+    assert b"APPENDIX: How to apply the Apache License to your work." in text, "LICENSE has no APPENDIX"
+
+
+def test_AC_010_license_is_the_official_apache_text() -> None:
+    assert_no_problems(license_problems(REPO_ROOT, OFFICIAL_LICENSE_SHA256))
 
 
 @pytest.mark.parametrize("lang", LANGS)
@@ -1100,49 +1150,76 @@ def test_AC_010_the_license_section_names_apache_2_0_and_links_the_file(lang: st
 def test_AC_010_a_license_equal_to_the_reference_passes(tmp_path: Path) -> None:
     root = build_tree(tmp_path)
 
-    assert license_problems(root, REFERENCE_LICENSE) == []
+    assert license_problems(root, REFERENCE_SHA256) == []
 
 
-def test_AC_010_one_changed_byte_fails_and_says_where(tmp_path: Path) -> None:
+def test_AC_010_one_changed_byte_fails(tmp_path: Path) -> None:
     root = build_tree(tmp_path)
     changed = bytearray(REFERENCE_LICENSE)
     changed[40] ^= 0x01
     write(root / "LICENSE", bytes(changed))
 
-    problems = license_problems(root, REFERENCE_LICENSE)
+    problems = license_problems(root, REFERENCE_SHA256)
 
     assert len(problems) == 1
-    assert "first difference at byte 40" in problems[0]
+    assert "it is not the official text" in problems[0]
 
 
 def test_AC_010_a_different_license_text_fails(tmp_path: Path) -> None:
     root = build_tree(tmp_path)
     write(root / "LICENSE", "MIT License\n\nPermission is hereby granted, free of charge, to any person...\n")
 
-    assert any("it is not the reference text" in problem for problem in license_problems(root, REFERENCE_LICENSE))
+    assert any("it is not the official text" in problem for problem in license_problems(root, REFERENCE_SHA256))
+
+
+def test_AC_010_the_text_without_the_appendix_fails(tmp_path: Path) -> None:
+    # the 177-line version of the terms alone (the one that the distribution packaging ships) is not the official file
+    root = build_tree(tmp_path)
+    write(root / "LICENSE", REFERENCE_TERMS)
+
+    assert license_problems(root, REFERENCE_SHA256)
 
 
 def test_AC_010_a_truncated_or_extended_license_fails(tmp_path: Path) -> None:
     root = build_tree(tmp_path)
     write(root / "LICENSE", REFERENCE_LICENSE[:-10])
-    assert license_problems(root, REFERENCE_LICENSE)
+    assert license_problems(root, REFERENCE_SHA256)
     write(root / "LICENSE", REFERENCE_LICENSE + b"Copyright 2026 Someone\n")
-    assert license_problems(root, REFERENCE_LICENSE)
+    assert license_problems(root, REFERENCE_SHA256)
+    write(root / "LICENSE", REFERENCE_LICENSE.replace(b"Apache", b"Apachf", 1))
+    assert license_problems(root, REFERENCE_SHA256)
 
 
-def test_AC_010_windows_line_ends_fail(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "variant",
+    [
+        REFERENCE_LICENSE.replace(b"\n", b"\r\n"),
+        REFERENCE_LICENSE.replace(b"\n", b"\r"),
+        b"\xef\xbb\xbf" + REFERENCE_LICENSE,
+        b"\xef\xbb\xbf" + REFERENCE_LICENSE.replace(b"\n", b"\r\n"),
+    ],
+    ids=["crlf", "cr", "bom", "bom-and-crlf"],
+)
+def test_AC_010_a_checkout_with_windows_line_ends_or_a_bom_passes(tmp_path: Path, variant: bytes) -> None:
     root = build_tree(tmp_path)
-    write(root / "LICENSE", REFERENCE_LICENSE.replace(b"\n", b"\r\n"))
+    write(root / "LICENSE", variant)
 
-    assert any("carriage return" in problem for problem in license_problems(root, REFERENCE_LICENSE))
+    assert license_problems(root, REFERENCE_SHA256) == []
+
+
+def test_AC_010_a_change_of_words_in_a_crlf_copy_still_fails(tmp_path: Path) -> None:
+    root = build_tree(tmp_path)
+    write(root / "LICENSE", REFERENCE_LICENSE.replace(b"\n", b"\r\n").replace(b"License", b"Licence", 1))
+
+    assert license_problems(root, REFERENCE_SHA256)
 
 
 def test_AC_010_a_missing_license_or_an_added_notice_fails(tmp_path: Path) -> None:
     root = build_tree(tmp_path)
     write(root / "NOTICE", "advancedRAG\n")
-    assert license_problems(root, REFERENCE_LICENSE) == ["NOTICE: there must be no NOTICE file (REQ-009)"]
+    assert license_problems(root, REFERENCE_SHA256) == ["NOTICE: there must be no NOTICE file (REQ-009)"]
     (root / "LICENSE").unlink()
-    assert license_problems(root, REFERENCE_LICENSE) == ["LICENSE: the file does not exist"]
+    assert license_problems(root, REFERENCE_SHA256) == ["LICENSE: the file does not exist"]
 
 
 def test_AC_010_the_license_section_without_apache_or_the_link_fails(tmp_path: Path) -> None:
