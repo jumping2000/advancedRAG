@@ -115,7 +115,7 @@ Scegli «Rinomina» accanto al titolo. Si apre un campo «Nuovo titolo» con «S
 
 Scegli «Elimina» accanto al titolo. La pagina chiede *Eliminare la conversazione «…»? Anche i suoi messaggi saranno cancellati.*, con il titolo al posto dei puntini, e mostra «Conferma» e «Annulla». L'eliminazione è definitiva: la conversazione, i suoi messaggi e le sue fonti vengono rimossi e l'applicazione non può ripristinarli.
 
-Le tue conversazioni sono tue: gli altri utenti non le vedono. Gli amministratori possono leggere ogni conversazione, nella loro pagina «Conversazioni», ma solo leggerla: non possono scrivere nelle tue.
+Le tue conversazioni sono tue: gli altri utenti non le vedono. Gli amministratori possono leggere ogni conversazione ed eliminarla, nella loro pagina «Conversazioni»: una conversazione eliminata da un amministratore sparisce anche per te. Non possono fare domande, riprovare o rinominare nelle tue.
 
 ## Messaggi d'errore
 

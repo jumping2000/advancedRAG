@@ -1,6 +1,6 @@
 # BUG-001: the user guide says the administrators can only read the conversations, but they can also delete them
 
-- Status: open
+- Status: fixed
 - Severity / impact: medium, a wrong privacy statement told to the users of the application: it hides that an administrator can delete any conversation. No data is at risk; the application behaves as specified.
 - Affected spec or area: SPEC-2026-11-20-fase-5-documentazione (REQ-004, REQ-005), `docs/guide/en/user.md`, `docs/guide/it/user.md`; behaviour specified by SPEC-2026-11-17-fase-3-chat and described in `docs/system/chat.md`
 
@@ -29,11 +29,11 @@ Found by the final check of phases 1-4 (`docs/audit/2026-11-20-controllo-finale.
 The guide was written from the sentence of the area page "read-only", and the delete of the admin page was described only in the admin guide; the test of the user guide (`test_docs_user_guide.py`) checks interface texts, not statements about the roles.
 
 ## Fix and tests
-- Red test reproducing the bug: not started
-- Minimal fix: not started (the sentence of `docs/guide/en/user.md:118` and `docs/guide/it/user.md:118`)
-- Non-regression test on the unchanged behaviour: not started
+- Red test reproducing the bug: `backend/tests/test_docs_user_guide_admin_delete.py` (4 failed before the fix, 4 passed after)
+- Minimal fix: the sentence of `docs/guide/en/user.md:118` and `docs/guide/it/user.md:118` now says the administrators can read and delete every conversation, and cannot ask, retry or rename in another user's
+- Non-regression test on the unchanged behaviour: `test_docs_user_guide.py`, `test_docs_alignment.py` and `test_docs_admin_guide.py` stay green (150 passed with the new test)
 
 ## Closure
-- [ ] Full `verify` green and the bug's test passing
-- [ ] Spec/ACs/`docs/system/` updated if the bug revealed a missing requirement
-- [ ] Lesson recorded in `AGENTS.md` or in an ADR, if any
+- [x] Full `verify` green and the bug's test passing
+- [x] Spec/ACs/`docs/system/` updated if the bug revealed a missing requirement: not needed; the REQ-005 wording of the phase 5 spec stays (a spec change is a design PR)
+- [x] Lesson recorded in `AGENTS.md` or in an ADR, if any: already in AGENTS.md (the conversation rule, phase 5 close)
