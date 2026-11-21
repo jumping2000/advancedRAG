@@ -17,7 +17,7 @@ advancedRAG risponde a domande sui tuoi documenti. Un amministratore raccoglie i
 
 - **Più knowledge base, tenute separate.** Un utente vede solo le KB assegnate a lui e le proprie conversazioni; documenti, fonti e conversazioni di una KB non vengono mai restituiti a chi non è autorizzato.
 - **Due ruoli.** L'admin gestisce utenti, KB, documenti e impostazioni, e legge le conversazioni di tutti; l'utente chatta sulle KB assegnate.
-- **Ingestione di file PDF, DOCX, PPTX, XLSX, TXT e MD.** Un worker legge ogni file (PDF, DOCX, PPTX e XLSX tramite Docling), lo divide in chunk e li indicizza con i vettori di Ollama; l'admin vede lo stato di ogni documento e può riprovare uno fallito. Gli originali caricati vengono eliminati dopo l'elaborazione.
+- **Ingestione di file PDF, DOCX, PPTX, XLSX, TXT e MD.** Un worker legge ogni file (PDF, DOCX, PPTX e XLSX tramite Docling), lo divide in chunk e li indicizza con i vettori di Ollama; l'admin vede lo stato di ogni documento e può riprovare uno fallito. L'originale di un documento viene eliminato quando il documento è «Pronto» o «Non supportato»; quello di un documento «Fallito» resta per `FAILED_ORIGINAL_RETENTION_DAYS` giorni (7 per impostazione predefinita) perché «Riprova» funzioni.
 - **Ricerca ibrida.** La ricerca vettoriale (pgvector) e quella per parole chiave (BM25, pg_search) sono unite con la Reciprocal Rank Fusion.
 - **Due passi facoltativi.** La riscrittura di una domanda di approfondimento come domanda autonoma, e un reranker che riordina i passaggi trovati. Ognuno agisce solo quando il suo servizio è configurato in `.env` e l'admin l'ha attivato nella pagina «Impostazioni».
 - **Risposte in streaming con fonti numerate.** Ogni citazione [n] apre l'estratto a cui si riferisce; quando la domanda è stata riscritta, la risposta mostra la domanda cercata («Ricerca: …»). Le conversazioni sono salvate: nuova, rinomina, elimina.
@@ -38,10 +38,11 @@ flowchart LR
     worker -->|"vettori dei chunk"| ollama["Ollama (esterno)"]
     backend -->|"vettore della domanda"| ollama
     backend -->|"risposta in streaming"| generation["provider di generazione (esterno)"]
+    backend -.->|"facoltativo"| rewrite["servizio di riscrittura (esterno)"]
     backend -.->|"facoltativo"| reranker["reranker (profilo rerank)"]
 ```
 
-`nginx` è l'unico servizio che pubblica una porta. `backend` e `worker` usano la stessa immagine; il `worker` prende i job di ingestione da `redis` e scrive chunk e vettori in `db`. La linea tratteggiata è facoltativa: il reranker di Compose parte solo con il profilo `rerank`, su CPU o su GPU NVIDIA. Come si collegano le parti, come viaggiano un documento e una domanda e come ogni KB è isolata è nella [guida di architettura](docs/guide/it/architecture.md).
+`nginx` è l'unico servizio che pubblica una porta. `backend` e `worker` usano la stessa immagine; il `worker` prende i job di ingestione da `redis` e scrive chunk e vettori in `db`. Le linee tratteggiate sono facoltative: il servizio di riscrittura è esterno e il reranker di Compose parte solo con il profilo `rerank`, su CPU o su GPU NVIDIA. Come si collegano le parti, come viaggiano un documento e una domanda e come ogni KB è isolata è nella [guida di architettura](docs/guide/it/architecture.md).
 
 ## Avvio rapido
 
