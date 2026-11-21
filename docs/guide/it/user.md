@@ -2,7 +2,7 @@
 
 [English](../en/user.md)
 
-Questa guida è per chi usa l'applicazione: si accede, si sceglie una knowledge base (KB), si fanno domande e si leggono le risposte con le loro fonti. Cita i testi dell'interfaccia italiana esattamente come li vedi, tra «». Le schermate mostrano dati inventati. Gestire utenti, KB, documenti e impostazioni è compito di un amministratore, nella guida admin; l'installazione dell'applicazione è nella [guida all'installazione](installation.md).
+Questa guida è per chi usa l'applicazione: si accede, si sceglie una knowledge base (KB), si fanno domande e si leggono le risposte con le loro fonti. Cita i testi dell'interfaccia italiana esattamente come li vedi, tra virgolette caporali, come «Accedi». Un testo che ha una parte che cambia (il tuo nome utente, una domanda) è in *corsivo*, con … al posto di quella parte. Le altre virgolette, come "password dimenticata", sono per parole che non sono sullo schermo: esempi e nomi delle sezioni di questa guida. Le schermate mostrano dati inventati. Gestire utenti, KB, documenti e impostazioni è compito di un amministratore, nella guida admin; l'installazione dell'applicazione è nella [guida all'installazione](installation.md).
 
 I dettagli tecnici sono nelle pagine di area [fondazioni](../../system/fondazioni.md) (login, sessioni, utenti, knowledge base) e [chat](../../system/chat.md) (ricerca, risposte in streaming, conversazioni, fonti). Sono scritte in inglese per chi sviluppa.
 
@@ -14,9 +14,9 @@ Apri l'indirizzo dell'applicazione che ti ha dato l'amministratore. Senza una se
 
 ![La pagina «Accedi»: i campi «Nome utente» e «Password» e il pulsante «Accedi»](../images/it/login.png)
 
-Gli account li crea un amministratore: non ci si può registrare da soli e la pagina non ha un link «password dimenticata». Se non hai un account, o ti serve una nuova password, rivolgiti a un amministratore.
+Gli account li crea un amministratore: non ci si può registrare da soli e la pagina non ha un link "password dimenticata". Se non hai un account, o ti serve una nuova password, rivolgiti a un amministratore.
 
-Dopo l'accesso arrivi alla pagina iniziale, che dice «Hai effettuato l'accesso come» seguito dal tuo nome utente. L'intestazione, in ogni pagina, ha il nome dell'applicazione, il selettore della lingua «Lingua» e, dopo l'accesso, i link «Home», il tuo nome utente e il pulsante «Esci».
+Dopo l'accesso arrivi alla pagina iniziale, che dice *Hai effettuato l'accesso come …*, con il tuo nome utente al posto dei puntini. L'intestazione, in ogni pagina, ha il nome dell'applicazione, il selettore della lingua «Lingua» e, dopo l'accesso, i link «Home», il tuo nome utente e il pulsante «Esci».
 
 La sessione termina da sola dopo un periodo senza alcuna attività: 480 minuti (8 ore), salvo che l'amministratore abbia impostato un altro valore, e ogni azione che fai fa ripartire il conteggio. Termina anche quando un amministratore disattiva il tuo utente o reimposta la tua password.
 
@@ -30,7 +30,7 @@ L'interfaccia ha due lingue, «Italiano» e «English». Parte nella lingua del 
 
 - Prima di accedere, la scelta cambia solo la pagina che stai guardando. Dopo l'uscita, la pagina di accesso resta nell'ultima lingua usata.
 - Dopo l'accesso, la scelta viene salvata anche nel tuo profilo, e la lingua salvata nel profilo è quella che trovi al prossimo accesso, da qualsiasi browser.
-- Se la scelta non si può salvare, la pagina torna alla lingua precedente e mostra un messaggio d'errore (vedi «Messaggi d'errore» più sotto).
+- Se la scelta non si può salvare, la pagina torna alla lingua precedente e mostra un messaggio d'errore (vedi la sezione "Messaggi d'errore" più sotto).
 
 ## Le tue knowledge base
 
@@ -47,7 +47,7 @@ Una knowledge base è un insieme di documenti sui quali l'applicazione sa rispon
 
 La pagina di una KB mostra il suo nome e la sua descrizione, l'elenco delle tue conversazioni con il pulsante «Nuova conversazione», e i messaggi della conversazione aperta con il campo della domanda.
 
-![La chat: una domanda, una risposta con le sue fonti, la riga «Ricerca: …» e l'estratto di una fonte](../images/it/chat.png)
+![La chat: una domanda, una risposta con le sue fonti, la riga Ricerca e l'estratto di una fonte](../images/it/chat.png)
 
 ### Fare una domanda
 
@@ -57,7 +57,7 @@ La pagina di una KB mostra il suo nome e la sua descrizione, l'elenco delle tue 
 
 Una domanda può avere al massimo 4000 caratteri, salvo che l'amministratore abbia impostato un altro limite. Una domanda più lunga viene rifiutata con «Il testo non è valido: controlla la lunghezza.» e il tuo testo resta nel campo.
 
-Una domanda fatta quando nessuna conversazione è aperta crea una nuova conversazione, e il suo titolo è l'inizio della domanda (i primi 80 caratteri). Le domande successive vanno alla conversazione aperta, così puoi fare domande di seguito come «e la spedizione?»: per capirle l'applicazione usa gli ultimi messaggi della conversazione (sei, per impostazione predefinita).
+Una domanda fatta quando nessuna conversazione è aperta crea una nuova conversazione, e il suo titolo è l'inizio della domanda (i primi 80 caratteri). Le domande successive vanno alla conversazione aperta, così puoi fare domande di seguito come "e la spedizione?": per capirle l'applicazione usa gli ultimi messaggi della conversazione (sei, per impostazione predefinita).
 
 ### Leggere la risposta
 
@@ -67,22 +67,28 @@ Se la KB non ha nessun documento pronto per essere letto, la risposta finisce su
 
 ### Fonti ed estratti
 
-I numeri tra parentesi quadre nella risposta, come `[1]`, indicano le fonti su cui si basa la risposta. Sotto la risposta l'elenco «Fonti» le nomina: il numero, il nome del documento e, quando il documento li ha, il titolo della sezione e le pagine (`p. 3`, oppure `pp. 3–5` per un intervallo).
+I numeri tra parentesi quadre nella risposta, come `[1]`, indicano le fonti su cui si basa la risposta. Sotto la risposta ogni fonte ha una riga con il suo numero e il nome del documento, come `[1] manuale.txt`, seguiti dal titolo della sezione e dalle pagine quando il documento li ha (`p. 3`, oppure `pp. 3–5` per un intervallo), e dal pulsante «Mostra estratto». L'elenco delle fonti non ha un titolo sullo schermo; per chi usa uno screen reader si chiama «Fonti».
 
 - Scegli «Mostra estratto» accanto a una fonte, oppure il numero `[1]` nel testo della risposta, per leggere il passaggio del documento che la risposta ha usato. L'estratto si apre sotto la fonte. «Nascondi estratto» lo chiude.
 - Se il passaggio non esiste più, per esempio perché il documento è stato eliminato, l'estratto dice «Fonte non più disponibile». Il nome del documento resta nell'elenco.
 - Solo i numeri che corrispondono a una fonte sono pulsanti.
 
-### La riga «Ricerca: …»
+### La riga *Ricerca: …*
 
-Alcune risposte hanno una riga «Ricerca:» seguita da una domanda, dopo il testo della risposta e prima delle fonti. Succede in una conversazione, su una domanda di seguito, quando l'amministratore ha attivato il passo «Riscrittura della domanda» nella pagina «Impostazioni»: l'applicazione riscrive la tua domanda breve come domanda autonoma usando i messaggi precedenti (per esempio «e la spedizione?» diventa una domanda completa sullo stesso argomento) e cerca nei documenti quella. La riga ti mostra che cosa è stato cercato, così capisci perché le fonti sono quelle. Compare quando la risposta è finita.
+Sotto alcune risposte c'è una riga *Ricerca: …*, con al posto dei puntini la domanda che è stata cercata, dopo il testo della risposta e prima delle fonti. Non compare su ogni risposta. Compare solo quando sono vere tutte queste condizioni:
 
-- Non c'è la riga per la prima domanda di una conversazione, e non c'è quando il passo è disattivato: in quel caso la ricerca ha usato la tua domanda come l'hai scritta.
-- L'amministratore può attivare anche il passo «Reranker», che riordina i passaggi trovati prima della risposta. Non aggiunge nessuna riga.
+- l'amministratore ha attivato il passo «Riscrittura della domanda» nella pagina «Impostazioni», e il servizio di riscrittura è configurato nell'installazione;
+- la conversazione ha già domande precedenti con una risposta andata a buon fine: la prima domanda di una conversazione non ha mai la riga, e non ce l'ha nemmeno una domanda che segue solo risposte fallite;
+- la riscrittura è riuscita: quando il servizio non risponde, la ricerca usa la tua domanda come l'hai scritta e nessuna riga viene mostrata;
+- la domanda riscritta è diversa dalla tua, senza contare gli spazi alle estremità e le maiuscole.
+
+Il passo riscrive una breve domanda di seguito (per esempio "e la spedizione?") come domanda autonoma, usando i messaggi precedenti, e l'applicazione cerca nei documenti quella. La riga ti mostra che cosa è stato cercato, così capisci perché le fonti sono quelle. Compare quando la risposta è finita. Quando manca, la ricerca ha usato la tua domanda come l'hai scritta.
+
+L'amministratore può attivare anche il passo «Reranker», che riordina i passaggi trovati prima della risposta. Non aggiunge nessuna riga.
 
 ### Riprovare una risposta fallita
 
-Una risposta può fallire, per esempio perché il servizio che la scrive non ha risposto in tempo. La risposta mostra allora il motivo (vedi «Perché una risposta fallisce» più sotto) e il pulsante «Riprova».
+Una risposta può fallire, per esempio perché il servizio che la scrive non ha risposto in tempo. La risposta mostra allora il motivo (vedi la sezione "Perché una risposta fallisce" più sotto) e il pulsante «Riprova».
 
 - Scegli «Riprova» per generare di nuovo la risposta, nello stesso punto, senza riscrivere la domanda.
 - «Riprova» c'è solo sull'ultimo messaggio della conversazione e solo se è fallito. Se dopo una risposta fallita fai un'altra domanda, la risposta fallita non si può più riprovare.
@@ -107,9 +113,9 @@ Scegli «Rinomina» accanto al titolo. Si apre un campo «Nuovo titolo» con «S
 
 ### Eliminare una conversazione
 
-Scegli «Elimina» accanto al titolo. La pagina chiede «Eliminare la conversazione «…»? Anche i suoi messaggi saranno cancellati.», con «Conferma» e «Annulla». L'eliminazione è definitiva: la conversazione, i suoi messaggi e le sue fonti vengono rimossi e l'applicazione non può ripristinarli.
+Scegli «Elimina» accanto al titolo. La pagina chiede *Eliminare la conversazione «…»? Anche i suoi messaggi saranno cancellati.*, con il titolo al posto dei puntini, e mostra «Conferma» e «Annulla». L'eliminazione è definitiva: la conversazione, i suoi messaggi e le sue fonti vengono rimossi e l'applicazione non può ripristinarli.
 
-Le tue conversazioni sono tue: gli altri utenti non le vedono. Gli amministratori possono leggere ogni conversazione, ma solo leggerla: non possono scrivere nelle tue.
+Le tue conversazioni sono tue: gli altri utenti non le vedono. Gli amministratori possono leggere ogni conversazione, nella loro pagina «Conversazioni», ma solo leggerla: non possono scrivere nelle tue.
 
 ## Messaggi d'errore
 

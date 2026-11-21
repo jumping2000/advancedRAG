@@ -2,7 +2,7 @@
 
 [Italiano](../it/user.md)
 
-This guide is for the people who use the application: you sign in, choose a knowledge base (KB), ask questions and read the answers with their sources. It names the texts of the English interface exactly as you see them, between «». The screenshots show invented data. Managing users, KBs, documents and settings is the work of an administrator, in the admin guide; installing the application is in the [installation guide](installation.md).
+This guide is for the people who use the application: you sign in, choose a knowledge base (KB), ask questions and read the answers with their sources. It names the texts of the English interface exactly as you see them, between guillemets, like «Sign in». A text that has a part that changes (your username, a question) is in *italics*, with … in place of that part. Other quotation marks, such as "forgot my password", are for words that are not on the screen: examples and the names of the sections of this guide. The screenshots show invented data. Managing users, KBs, documents and settings is the work of an administrator, in the admin guide; installing the application is in the [installation guide](installation.md).
 
 The technical details are in the area pages [foundations](../../system/fondazioni.md) (login, sessions, users, knowledge bases) and [chat](../../system/chat.md) (retrieval, streamed answers, conversations, sources). They are written in English for developers.
 
@@ -14,9 +14,9 @@ Open the address of the application that your administrator gave you. Without a 
 
 ![The page «Sign in»: the fields «Username» and «Password» and the button «Sign in»](../images/en/login.png)
 
-Your accounts are created by an administrator: there is no way to register yourself, and the page has no «forgot my password» link. If you do not have an account, or you need a new password, ask an administrator.
+Your accounts are created by an administrator: there is no way to register yourself, and the page has no "forgot my password" link. If you do not have an account, or you need a new password, ask an administrator.
 
-After signing in you land on the home page, which says «You are signed in as» followed by your username. The header, on every page, has the name of the application, the language selector «Language» and, once you are signed in, the links «Home», your username and the button «Sign out».
+After signing in you land on the home page, which says *You are signed in as …*, with your username in place of the dots. The header, on every page, has the name of the application, the language selector «Language» and, once you are signed in, the links «Home», your username and the button «Sign out».
 
 The session ends by itself after a period without any activity: 480 minutes (8 hours) unless the administrator set another value, and every action you take starts the count again. It also ends when an administrator deactivates your user or resets your password.
 
@@ -30,7 +30,7 @@ The interface has two languages, «Italiano» and «English». It starts in the 
 
 - Before you sign in, the choice only changes the page you are looking at. After signing out, the sign-in page keeps the last language you used.
 - After you sign in, the choice is also saved in your profile, and the language saved in your profile is the one you get the next time you sign in, on any browser.
-- If the choice cannot be saved, the page goes back to the previous language and shows an error message (see «Error messages» below).
+- If the choice cannot be saved, the page goes back to the previous language and shows an error message (see the section "Error messages" below).
 
 ## Your knowledge bases
 
@@ -47,7 +47,7 @@ A knowledge base is a set of documents that the application can answer questions
 
 The page of a KB shows its name and description, the list of your conversations with the button «New conversation», and the messages of the open conversation with the question field.
 
-![The chat: a question, an answer with its sources, the line «Search: …» and the excerpt of a source](../images/en/chat.png)
+![The chat: a question, an answer with its sources, the line Search and the excerpt of a source](../images/en/chat.png)
 
 ### Ask a question
 
@@ -57,7 +57,7 @@ The page of a KB shows its name and description, the list of your conversations 
 
 A question can be at most 4000 characters long, unless the administrator set another limit. A longer one is refused with «The text is not valid: check its length.», and your text stays in the field.
 
-A question asked while no conversation is open creates a new conversation, and its title is the beginning of the question (the first 80 characters). The next questions go to the open conversation, so you can ask follow-up questions such as «and the shipping?»: the application uses the most recent messages of the conversation (six by default) to understand them.
+A question asked while no conversation is open creates a new conversation, and its title is the beginning of the question (the first 80 characters). The next questions go to the open conversation, so you can ask follow-up questions such as "and the shipping?": the application uses the most recent messages of the conversation (six by default) to understand them.
 
 ### Read the answer
 
@@ -67,22 +67,28 @@ If the KB has no document that is ready to be read, the answer ends at once with
 
 ### Sources and excerpts
 
-The numbers in square brackets in the answer, such as `[1]`, point to the sources the answer is based on. Under the answer the list «Sources» names them: the number, the name of the document and, when the document has them, the title of the section and the pages (`p. 3`, or `pp. 3–5` for a range).
+The numbers in square brackets in the answer, such as `[1]`, point to the sources the answer is based on. Under the answer each source has a line with its number and the name of the document, such as `[1] manual.txt`, followed by the title of the section and the pages when the document has them (`p. 3`, or `pp. 3–5` for a range), and by the button «Show excerpt». The list of sources has no title on the screen; it is labelled «Sources» for screen readers.
 
 - Choose «Show excerpt» next to a source, or the number `[1]` in the text of the answer, to read the passage of the document the answer used. The excerpt opens under the source. «Hide excerpt» closes it.
 - If the passage no longer exists, for example because the document was deleted, the excerpt says «Source no longer available». The name of the document stays in the list.
 - Only the numbers that correspond to a source are buttons.
 
-### The line «Search: …»
+### The line *Search: …*
 
-Some answers have a line «Search:» followed by a question, after the text of the answer and before the sources. This happens in a conversation, on a follow-up question, when the administrator has switched on the step «Question rewriting» in the page «Settings»: the application rewrites your short question as a standalone one using the earlier messages (for example «and the shipping?» becomes a full question about the same subject) and looks in the documents for that one. The line shows you what was searched, so you can see why the sources are what they are. It appears when the answer is finished.
+Under some answers there is a line *Search: …*, with the question that was searched in place of the dots, after the text of the answer and before the sources. It is not shown on every answer. It appears only when all of these are true:
 
-- There is no line for the first question of a conversation, and none when the step is off: then the search used your question as you wrote it.
-- The administrator can also switch on the step «Reranker», which reorders the retrieved passages before the answer. It adds no line of its own.
+- the administrator has switched on the step «Question rewriting» in the page «Settings», and the rewriting service is configured in the installation;
+- the conversation already has earlier questions with an answer that worked: the first question of a conversation never has the line, and neither has a question that follows only failed answers;
+- the rewriting worked: when the service does not answer, the search uses your question as you wrote it and no line is shown;
+- the rewritten question is different from yours, ignoring the spaces at its ends and the capital letters.
+
+The step rewrites a short follow-up question (for example "and the shipping?") as a standalone one, using the earlier messages, and the application looks in the documents for that one. The line shows you what was searched, so you can see why the sources are what they are. It appears when the answer is finished. When it is missing, the search used your question as you wrote it.
+
+The administrator can also switch on the step «Reranker», which reorders the retrieved passages before the answer. It adds no line of its own.
 
 ### Retry a failed answer
 
-An answer can fail, for example because the service that writes it did not answer in time. The answer then shows the reason (see «Why an answer fails» below) and the button «Retry».
+An answer can fail, for example because the service that writes it did not answer in time. The answer then shows the reason (see the section "Why an answer fails" below) and the button «Retry».
 
 - Choose «Retry» to generate the answer again, in the same place, without writing the question again.
 - «Retry» is only on the last message of the conversation and only when it failed. If you ask another question after a failed answer, the failed one cannot be retried any more.
@@ -107,9 +113,9 @@ Choose «Rename» next to the title. A field «New title» opens with «Save» a
 
 ### Delete a conversation
 
-Choose «Delete» next to the title. The page asks «Delete the conversation "…"? Its messages will be removed too.», with «Confirm» and «Cancel». Deleting is final: the conversation, its messages and its sources are removed, and the application cannot bring them back.
+Choose «Delete» next to the title. The page asks *Delete the conversation "…"? Its messages will be removed too.*, with the title in place of the dots, and shows «Confirm» and «Cancel». Deleting is final: the conversation, its messages and its sources are removed, and the application cannot bring them back.
 
-Your conversations are yours: the other users cannot see them. The administrators can read every conversation, but only read it: they cannot write in yours.
+Your conversations are yours: the other users cannot see them. The administrators can read every conversation, in their page «Conversations», but only read it: they cannot write in yours.
 
 ## Error messages
 
