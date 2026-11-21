@@ -17,6 +17,8 @@ The guide has no command block to run; the screenshots are checked by eye (AC-01
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import subprocess
 import sys
@@ -40,10 +42,14 @@ REQUIRED_UI_KEYS = (
     "language.it",
     "language.en",
     "kbs.title",
+    "kbs.titleAll",
     "kbs.empty",
     "kbs.back",
     "kbs.errors.kb_not_found",
     "chat.conversations",
+    "chat.loading",
+    "chat.you",
+    "chat.assistant",
     "chat.new",
     "chat.noConversations",
     "chat.empty",
@@ -72,6 +78,11 @@ REQUIRED_UI_KEYS = (
     "chat.errors.conversation_not_found",
     "chat.errors.not_retryable",
     "chat.errors.validation_error",
+    "settings.menu",
+    "settings.rewrite",
+    "settings.rerank",
+    "documents.menu",
+    "convAdmin.menu",
     "errors.invalid_credentials",
     "errors.not_authenticated",
     "errors.validation_error",
@@ -107,6 +118,26 @@ def guide_text(lang: str, root: Path = REPO_ROOT) -> str:
 def quoted(value: str) -> str:
     """How the guide writes a text of the interface: between «», so that «Riprova» is not found in a longer message."""
     return f"«{value}»"
+
+
+def quoted_texts(text: str) -> list[str]:
+    """What the guide puts between «» outside its italics. A text of the interface that has a changing part (a user
+    name, a question, a title) is written in italics with `…` in place of that part, so its own «» (the Italian
+    confirmation of a deletion has some) are not read."""
+    return re.findall(r"«([^»]*)»", re.sub(r"\*[^*\n]+\*", "", text))
+
+
+def not_interface_texts(lang: str, text: str, root: Path = REPO_ROOT) -> list[str]:
+    """The texts between «» that are not, as written, a text of `<lang>.json`: «» is only for what is on screen."""
+    path = root / "frontend" / "src" / "i18n" / f"{lang}.json"
+    known = set(strings(json.loads(read_text(path))))
+    return [quoted for quoted in quoted_texts(text) if quoted not in known]
+
+
+def strings(node: object) -> list[str]:
+    if isinstance(node, dict):
+        return [text for value in node.values() for text in strings(value)]
+    return [node] if isinstance(node, str) else []
 
 
 def interpolation_prefix(value: str) -> str:
@@ -194,7 +225,7 @@ def collected(*arguments: str) -> tuple[list[str], str]:
 def complete_text(lang: str, root: Path = REPO_ROOT) -> str:
     """A guide made of nothing but everything the checks ask for."""
     parts = [quoted(ui_text(lang, key, root)) for key in REQUIRED_UI_KEYS]
-    parts += [ui_text(lang, key, root) for key in PREFIX_UI_KEYS]
+    parts += [f"*{re.sub(r'{{[^}]*}}', '…', ui_text(lang, key, root))}*" for key in PREFIX_UI_KEYS]
     parts += [f"![{name}](../images/{lang}/{name})" for name in USER_SCREENSHOTS]
     return "\n\n".join(parts)
 
@@ -245,6 +276,53 @@ def test_AC_005_the_required_keys_exist_in_both_languages_and_have_no_interpolat
     for key in PREFIX_UI_KEYS:
         assert "{{" in ui_text(lang, key), f"{key} in {lang}.json has no interpolation: it belongs to REQUIRED_UI_KEYS"
         assert interpolation_prefix(ui_text(lang, key)) != ""
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_AC_005_everything_between_guillemets_is_a_text_of_the_interface_as_the_language_file_has_it(
+    lang: str,
+) -> None:
+    assert not_interface_texts(lang, guide_text(lang)) == [], f"not interface texts, in the guide in '{lang}'"
+
+
+def test_AC_005_a_guillemet_text_that_is_not_on_screen_is_reported_and_an_italic_one_is_not() -> None:
+    text = complete_text("en")
+
+    assert not_interface_texts("en", text) == []
+    assert quoted_texts("a «Sign in» and a «forgot my password»") == ["Sign in", "forgot my password"]
+    assert not_interface_texts("en", text + "\n«forgot my password» and «Search: …»") == [
+        "forgot my password",
+        "Search: …",
+    ]
+    assert not_interface_texts("en", text + "\n*Search: …* and *Delete the conversation «…»?*") == []
+    assert not_interface_texts("it", complete_text("it") + " «Messaggi d'errore»") == ["Messaggi d'errore"]
+    assert not_interface_texts("en", text.replace("«Retry»", "«retry»")) == ["retry"]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "kbs.titleAll",
+        "chat.loading",
+        "chat.you",
+        "chat.assistant",
+        "settings.menu",
+        "settings.rewrite",
+        "settings.rerank",
+        "documents.menu",
+        "convAdmin.menu",
+    ],
+)
+def test_AC_005_the_texts_that_the_guides_name_besides_the_chat_are_checked_too(key: str) -> None:
+    assert key in REQUIRED_UI_KEYS
+    for lang in LANGS:
+        value = ui_text(lang, key)
+        same = [other for other in REQUIRED_UI_KEYS if ui_text(lang, other) == value]
+        changed = complete_text(lang).replace(quoted(value), quoted(value + "!"))
+
+        assert key in same
+        assert missing_ui_texts(lang, complete_text(lang)) == []
+        assert missing_ui_texts(lang, changed) == same
 
 
 def test_AC_005_the_search_line_is_checked_by_its_base_text_in_each_language() -> None:
