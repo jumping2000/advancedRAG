@@ -122,7 +122,7 @@ flowchart TD
 - [x] T-03 La guida admin IT/EN — covers: AC-006 — files: `docs/guide/en/admin.md`, `docs/guide/it/admin.md`, `backend/tests/test_docs_admin_guide.py` — depends: T-02 — verify: `python3 scripts/verify.py`
 - [x] T-04 La guida di architettura e sviluppo IT/EN — covers: AC-008 — files: `docs/guide/en/architecture.md`, `docs/guide/it/architecture.md`, `backend/tests/test_docs_architecture_guide.py` — depends: T-01 — verify: `python3 scripts/verify.py`
 - [x] T-05 I README EN/IT con i badge e la licenza Apache-2.0 — covers: AC-001, AC-002, AC-003, AC-010 — files: `README.md`, `README.it.md`, `LICENSE`, `backend/tests/test_readme.py` — depends: T-03, T-04 — verify: `python3 scripts/verify.py`
-- [ ] T-06 Il controllo finale delle fasi 1-4, con il rapporto e un bug per difetto; chiude la fase 5 — covers: AC-004, AC-013, AC-014, AC-015 — files: `docs/audit/2026-11-20-controllo-finale.md`, `docs/bugs/`, `backend/tests/test_docs_audit.py`, `backend/tests/test_docs_guides_complete.py`, `docs/system/fondazioni.md`, `docs/specs/2026-11-20-fase-5-documentazione/spec.md`, `AGENTS.md` — depends: T-05 — verify: `python3 scripts/verify.py`
+- [x] T-06 Il controllo finale delle fasi 1-4, con il rapporto e un bug per difetto; chiude la fase 5 — covers: AC-004, AC-013, AC-014, AC-015 — files: `docs/audit/2026-11-20-controllo-finale.md`, `docs/bugs/`, `backend/tests/test_docs_audit.py`, `backend/tests/test_docs_guides_complete.py`, `docs/system/fondazioni.md`, `docs/specs/2026-11-20-fase-5-documentazione/spec.md`, `AGENTS.md` — depends: T-05 — verify: `python3 scripts/verify.py`
 
 T-02 e T-04 dipendono solo da T-01 e toccano file diversi: possono andare in parallelo. T-03 segue T-02, perché usa le
 sue schermate.
