@@ -1,6 +1,6 @@
 # SPEC-2026-11-20-fase-5-documentazione: Fase 5 – Documentazione IT/EN, README con badge e controllo finale
 
-- Status: approved
+- Status: implemented
 - Owner: jumping2000
 
 ## Problem and goal

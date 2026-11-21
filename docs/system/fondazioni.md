@@ -1,8 +1,8 @@
 # Area: fondazioni (stack, access, users, knowledge bases)
 
-- Last aligned: 2026-11-20
+- Last aligned: 2026-11-21
 - Linked specs: SPEC-2026-11-06-fase-1-fondazioni, SPEC-2026-11-07-fase-2-ingestion, SPEC-2026-11-17-fase-3-chat,
-  SPEC-2026-11-20-fase-4-rerank-rewrite
+  SPEC-2026-11-20-fase-4-rerank-rewrite, SPEC-2026-11-20-fase-5-documentazione
 
 ## Current behaviour
 The platform runs as a Docker Compose stack of five services: `nginx` (the only one with a host port, `HTTP_PORT`,
@@ -149,6 +149,17 @@ the generic error: 409 `service_not_configured` is «Il servizio di questo passo
 its saved state, with «Non configurato» as part of its accessible description. Load and save errors are plain paragraphs,
 not `role="alert"` (the header's language selector owns the alert). The chat side of the two steps is in
 [chat.md](chat.md).
+
+Phase 5 (SPEC-2026-11-20-fase-5-documentazione) changes no behaviour of the platform: it adds the documentation for the people
+who install and use it. `README.md` and `README.it.md` (with the badges and the Apache-2.0 `LICENSE`) and four guides in each
+language, `docs/guide/en/` and `docs/guide/it/` (`user.md`, `admin.md`, `installation.md`, `architecture.md`, with the
+screenshots in `docs/guide/images/en/` and `docs/guide/images/it/`), describe what this page and the other area pages describe, in
+the language of the reader; the guides link back to these pages for the technical details. They are kept aligned with the code by
+tests of the backend suite (`backend/tests/test_docs_*.py` and `test_readme.py`: the variables of `.env.example`, the interface texts
+of `frontend/src/i18n/`, the two languages), and the screenshots are captured again with `uv run --directory backend pytest -m
+screenshots` (opt-in, never part of `verify.py` or of the CI). The final check of phases 1-4 is the report
+[2026-11-20-controllo-finale.md](../audit/2026-11-20-controllo-finale.md), with a file in `docs/bugs/` for each defect it found.
+The Diagrams section below needs no change: nothing of the flows, states, classes or tables changed.
 
 ## Interfaces
 Errors are always `{"error": {"code": "<code>", "message": "<English text>"}}`; the UI translates the `code`.
@@ -487,6 +498,8 @@ The complete list, with the notes for phase 3, is in [ingestion.md](ingestion.md
 - none: the area was built from the spec (greenfield); its acceptance tests are listed under References.
 
 ## References
+- Guides and READMEs (phase 5): [docs/guide/en/](../guide/en/installation.md), [docs/guide/it/](../guide/it/installation.md),
+  [README.md](../../README.md), [README.it.md](../../README.it.md); final check: [controllo-finale.md](../audit/2026-11-20-controllo-finale.md).
 - Spec and plan: [spec.md](../specs/2026-11-06-fase-1-fondazioni/spec.md),
   [plan.md](../specs/2026-11-06-fase-1-fondazioni/plan.md); toolchain: [ADR-001](../adr/ADR-001-toolchain-fase-1.md).
 - Stack: [compose.yaml](../../compose.yaml), [compose.tls.yaml](../../compose.tls.yaml),
